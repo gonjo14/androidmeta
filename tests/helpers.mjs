@@ -12,7 +12,7 @@ export function loadAnalysis({ worker = false, limits = {} } = {}) {
     postMessage: message => messages.push(message),
   });
   scope.self = scope;
-  const files = ['src/config.js', 'src/logcat.js', 'src/log-query.js', 'src/bugreport-analysis.js'];
+  const files = ['src/config.js', 'src/logcat.js', 'src/log-query.js', 'src/bugreport-analysis.js', 'src/packages-analysis.js'];
   if (worker) files.unshift('vendor/jszip-3.10.1.min.js');
   for (const name of files) {
     let source = read(name);
@@ -25,7 +25,7 @@ export function loadAnalysis({ worker = false, limits = {} } = {}) {
     vm.runInContext(source, scope, { filename: name });
   }
   if (worker) vm.runInContext(read('src/analysis-worker.js'), scope, { filename: 'src/analysis-worker.js' });
-  const api = vm.runInContext('({ AnalysisConfig, validateCapture, Logcat, LogQuery, Bugreport })', scope);
+  const api = vm.runInContext('({ AnalysisConfig, validateCapture, Logcat, LogQuery, Bugreport, PackageAnalysis })', scope);
   return { ...api, scope, messages, send: async data => {
     messages.length = 0;
     await scope.onmessage({ data });

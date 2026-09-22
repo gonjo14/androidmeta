@@ -87,6 +87,20 @@ try {
   assert.equal(await page.evaluate(() => window.__workers.length), workersBefore);
   assert.equal(await page.locator('#bugreport-results').evaluate(element => element.hidden), false);
   console.log('PASS: invalid file selection is rejected before reading or replacing a result');
+
+  await page.locator('.nav-item[data-route="packages"]').click();
+  await page.locator('[data-demo="packages"]').click();
+  await page.waitForFunction(() => document.getElementById('package-count')?.textContent === '3 matching packages');
+  await page.locator('#package-type').selectOption('third-party');
+  assert.equal(await page.locator('#package-count').innerText(), '2 matching packages');
+  await page.locator('#package-review').selectOption('third-party-missing-installer');
+  assert.equal(await page.locator('#package-count').innerText(), '1 matching packages');
+  await page.locator('#package-list [data-package]').click();
+  assert.match(await page.locator('#package-title').innerText(), /com\.example\.notes/);
+  assert.match(await page.locator('#package-meta').innerText(), /\$\[2\]/);
+  assert.match(await page.locator('#package-content').innerText(), /Certificate error reported/);
+  await page.locator('[data-close="package-dialog"]').click();
+  console.log('PASS: package inventory sample, filters, and evidence dialog');
   assert.deepEqual(pageErrors, []);
 } finally {
   await browser.close();

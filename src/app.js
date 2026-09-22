@@ -8,18 +8,19 @@
   function createToolState() {
     return { worker: null, summary: null, tab: 'overview', busy: false, fileSize: 0, page: 0, queryId: 0, filters: {} };
   }
-  const state = { bugreport: createToolState(), logcat: createToolState() };
-  const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser' };
+  const state = { bugreport: createToolState(), logcat: createToolState(), packages: createToolState() };
+  const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser', packages: 'Package Analyser' };
   const historyKey = 'android_tools_history_v2';
   let route = 'home', toastTimer = null, queryTimer = null, contextTool = null, contextTarget = 1;
   let contextRequestId = 0;
+  const packageUI = { $, escapeHTML, number, stat, panel, table, notes };
 
   function toast(message) {
     clearTimeout(toastTimer); $('toast').textContent = message; $('toast').hidden = false;
     toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500);
   }
   function navigate(next) {
-    route = ['home', 'bugreport', 'logcat'].includes(next) ? next : 'home';
+    route = ['home', ...Object.keys(titles)].includes(next) ? next : 'home';
     document.querySelectorAll('.page').forEach(page => { page.hidden = page.id !== route; });
     document.querySelectorAll('.nav-item').forEach(button => {
       const active = button.dataset.route === route;
@@ -34,12 +35,39 @@
 
   function renderTool(tool) {
     const log = tool === 'logcat';
+    const packages = tool === 'packages';
+    const view = {
+      logcat: {
+        eyebrow: 'LOGCAT INVESTIGATION', noun: 'logcat file',
+        subtitle: 'Find the important events in logcat.txt, then inspect the lines around them.',
+        upload: 'Open a saved logcat capture or choose a log file inside a ZIP.',
+        open: 'Supports threadtime, time, brief, and long logcat formats, including standard year and UID fields.',
+        investigate: 'Separate crash markers from ordinary error logging. Search by message, tag, PID, buffer, or priority.',
+      },
+      bugreport: {
+        eyebrow: 'DEVICE DIAGNOSTICS', noun: 'bugreport',
+        subtitle: 'Review crashes, responsiveness, battery statistics, and app access in one capture.',
+        upload: 'Open a bugreport ZIP or the extracted text report.',
+        open: 'ZIP contents are inspected first so you can choose the right text report.',
+        investigate: 'Check section coverage, crash details, wakelock activity, and observed package access.',
+      },
+      packages: {
+        eyebrow: 'PACKAGE INVENTORY', noun: 'packages.json',
+        subtitle: 'Inspect installed-package metadata, APK hashes, installers, and certificate coverage.',
+        upload: 'Open an Android package inventory exported as a JSON array.',
+        open: 'Each record contains a package name and its APK file metadata. Parsing runs locally.',
+        investigate: 'Filter reported system and third-party packages, disabled state, installers, and missing or inconsistent data.',
+      },
+    }[tool];
+    const uploadHint = packages
+      ? `JSON · UP TO ${AnalysisConfig.PACKAGE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_PACKAGES)} PACKAGES · PROCESSED LOCALLY`
+      : `TXT, LOG, ZIP · UP TO ${AnalysisConfig.FILE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_LINES)} LINES · PROCESSED LOCALLY`;
     $(tool).innerHTML = `
-      <div class="page-heading"><div><div class="eyebrow">${log ? 'LOGCAT INVESTIGATION' : 'DEVICE DIAGNOSTICS'}</div><h1>${titles[tool]}</h1><p class="subtitle">${log ? 'Find the important events in logcat.txt, then inspect the lines around them.' : 'Review crashes, responsiveness, battery statistics, and app access in one capture.'}</p></div><button class="button" data-demo="${tool}">Try a sample</button></div>
+      <div class="page-heading"><div><div class="eyebrow">${view.eyebrow}</div><h1>${titles[tool]}</h1><p class="subtitle">${view.subtitle}</p></div><button class="button" data-demo="${tool}">Try a sample</button></div>
       <div id="${tool}-upload" class="upload-panel" data-drop="${tool}">
-        <div class="upload-icon">${icon('upload')}</div><h2>Drop your ${log ? 'logcat file' : 'bugreport'} here</h2><p>${log ? 'Open a saved logcat capture or choose a log file inside a ZIP.' : 'Open a bugreport ZIP or the extracted text report.'}</p>
-        <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose file</button></div><p class="upload-hint">TXT, LOG, ZIP · UP TO ${AnalysisConfig.FILE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_LINES)} LINES · PROCESSED LOCALLY</p>
-        <input id="${tool}-file" type="file" accept=".txt,.log,.zip" hidden aria-label="Choose ${log ? 'logcat' : 'bugreport'} file">
+        <div class="upload-icon">${icon('upload')}</div><h2>Drop your ${view.noun} here</h2><p>${view.upload}</p>
+        <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose file</button></div><p class="upload-hint">${uploadHint}</p>
+        <input id="${tool}-file" type="file" accept="${packages ? '.json' : '.txt,.log,.zip'}" hidden aria-label="Choose ${view.noun} file">
       </div>
       <label class="remember"><input id="${tool}-remember" type="checkbox">Remember analysis summaries in this browser</label>
       <div id="${tool}-error" class="notice error" role="alert" hidden></div>
@@ -47,7 +75,7 @@
       <div id="${tool}-archive" class="archive-picker" hidden><h2>Choose a file from this archive</h2><p>The archive contains several text files. Select the capture to analyse.</p><label class="field-label" for="${tool}-entry">File in archive</label><select id="${tool}-entry"></select><div class="button-row"><button class="button primary" data-entry="${tool}">Analyse selected file</button><button class="button" data-cancel="${tool}">Cancel</button></div></div>
       <div id="${tool}-filebar" class="file-bar" hidden><div class="file-info">${icon('file')}<div><span class="filename" id="${tool}-filename"></span><span class="file-meta" id="${tool}-filemeta"></span></div></div><div class="button-row report-actions"><button class="button small" data-download="${tool}" data-format="json">${icon('download')}JSON</button><button class="button small" data-download="${tool}" data-format="md">Report</button><button class="button small" data-reset="${tool}">New file</button></div></div>
       <div id="${tool}-results" hidden></div>
-      <div id="${tool}-help" class="help-grid"><div class="help-card"><span class="step">01 / OPEN</span><h3>Start with your capture</h3><p>${log ? 'Supports threadtime, time, brief, and long logcat formats, including standard year and UID fields.' : 'ZIP contents are inspected first so you can choose the right text report.'}</p></div><div class="help-card"><span class="step">02 / INVESTIGATE</span><h3>Follow the evidence</h3><p>${log ? 'Separate crash markers from ordinary error logging. Search by message, tag, PID, buffer, or priority.' : 'Check section coverage, crash details, wakelock activity, and observed package access.'}</p></div><div class="help-card"><span class="step">03 / EXPORT</span><h3>Take the findings with you</h3><p>Download a JSON summary or a readable Markdown report.${log ? ' Export matching raw log entries too.' : ''}</p></div></div>`;
+      <div id="${tool}-help" class="help-grid"><div class="help-card"><span class="step">01 / OPEN</span><h3>Start with your capture</h3><p>${view.open}</p></div><div class="help-card"><span class="step">02 / INVESTIGATE</span><h3>Follow the evidence</h3><p>${view.investigate}</p></div><div class="help-card"><span class="step">03 / EXPORT</span><h3>Take the findings with you</h3><p>Download a JSON summary or a readable Markdown report.${log ? ' Export matching raw log entries too.' : ''}</p></div></div>`;
     $(`${tool}-file`).addEventListener('change', event => {
       const file = event.target.files[0]; if (file) openFile(tool, file); event.target.value = '';
     });
@@ -75,6 +103,7 @@
     for (const id of ['loading', 'error', 'archive', 'filebar', 'results']) $(`${tool}-${id}`).hidden = true;
     $(`${tool}-results`).replaceChildren(); $(`${tool}-upload`).hidden = false; $(`${tool}-help`).hidden = false;
     $(tool).setAttribute('aria-busy', 'false');
+    if (tool === 'packages' && $('package-dialog').open) $('package-dialog').close();
     if (contextTool === tool) {
       contextRequestId++;
       contextTool = null;
@@ -82,7 +111,7 @@
     }
   }
   function openFile(tool, file) {
-    const validationError = validateCapture(file);
+    const validationError = validateCapture(file, tool);
     if (validationError) { showError(tool, validationError); return; }
     reset(tool);
     state[tool].fileSize = file.size;
@@ -166,7 +195,9 @@
     $(`${tool}-filename`).textContent = s.source_file;
     $(`${tool}-filemeta`).textContent = `${state[tool].worker ? bytes(state[tool].fileSize) + ' · ' : 'Saved summary · '}${new Date(s.analyzed_at).toLocaleString()}`;
     const el = $(`${tool}-results`);
-    if (tool === 'logcat') {
+    if (tool === 'packages') {
+      PackagesView.render(s, state.packages, packageUI);
+    } else if (tool === 'logcat') {
       el.innerHTML = `<div class="stats">${stat('Log entries', s.parsed_records, `${number(s.physical_lines)} source lines`)}${stat('Error records', s.levels.E, 'Priority E · not all are crashes', s.levels.E ? 'danger' : '')}${stat('Warning records', s.levels.W, 'Priority W', s.levels.W ? 'warn' : '')}${stat('Crash markers', s.counts.native + s.counts.java, `${number(s.counts.anr)} ANR markers`, s.counts.native + s.counts.java ? 'danger' : '')}</div>${tabs(tool, [['overview', 'Overview'], ['findings', `Findings · ${number(s.finding_groups)}`], ['explorer', 'Log explorer']])}<div id="logcat-tab-content"></div>`;
       if (state[tool].tab === 'overview') renderLogOverview(s);
       if (state[tool].tab === 'findings') renderLogFindings(s);
@@ -314,6 +345,7 @@
     setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
   function markdown(s) {
+    if (s.tool === 'packages') return PackagesView.markdown(s);
     const block = text => String(text ?? '').split('\n').map(line => `    ${line}`).join('\n');
     const lines = [`# ${titles[s.tool] || 'Bug Report Analyser'} report`, '', 'Source:', '', block(s.source_file), '', `Analysed: ${s.analyzed_at}`, '', '## Counts', ''];
     for (const [name, value] of Object.entries(s.counts)) lines.push(`- ${name.replace(/_/g, ' ')}: ${value}`);
@@ -346,7 +378,7 @@
         const legacy = JSON.parse(localStorage.getItem('bugreport_analyzer_history_v1') || '[]');
         if (Array.isArray(legacy)) value = legacy.filter(e => e?.summary?.counts && e.summary.battery_diagnosis && e.summary.crash_diagnosis && e.summary.stalkerware_indicators).map(e => ({ ...e, summary: { ...e.summary, tool: 'bugreport', coverage: { sectioned: e.summary.sections_found?.[0] !== 'FULL_TEXT', battery: Boolean(e.summary.wakelocks?.length), packages: Boolean(e.summary.stalkerware_indicators.contributors?.length) }, notes: ['Saved by the previous analyser. Reopen the capture to refresh coverage and run the updated checks.'] } }));
       }
-      const valid = Array.isArray(value) ? value.filter(e => e?.summary && typeof e.summary.source_file === 'string' && e.summary.counts && ['bugreport', 'logcat'].includes(e.summary.tool)) : [];
+      const valid = Array.isArray(value) ? value.filter(e => e?.summary && typeof e.summary.source_file === 'string' && e.summary.counts && Object.keys(titles).includes(e.summary.tool) && (e.summary.tool !== 'packages' || PackageAnalysis.isSummary(e.summary))) : [];
       return valid.slice(0, 10);
     } catch (_) { return []; }
   }
@@ -368,6 +400,15 @@
   }
 
   function demo(tool) {
+    if (tool === 'packages') {
+      const inventory = [
+        { name: 'com.example.system', uid: 10001, system: true, third_party: false, disabled: false, installer: 'null', files: [{ path: '/system/app/Example/base.apk', sha256: 'a'.repeat(64), verified_certificate: false, trusted_certificate: false }] },
+        { name: 'com.example.reader', uid: 10002, system: false, third_party: true, disabled: false, installer: 'com.example.store', files: [{ path: '/data/app/com.example.reader/base.apk', sha256: 'b'.repeat(64), verified_certificate: false }] },
+        { name: 'com.example.notes', uid: 10003, system: false, third_party: true, disabled: true, installer: null, files: [{ path: '/data/app/com.example.notes/base.apk', sha256: 'c'.repeat(64), certificate_error: 'Certificate data was not collected.' }] },
+      ];
+      openFile(tool, new File([JSON.stringify(inventory)], 'sample-packages.json', { type: 'application/json' }));
+      return;
+    }
     const sample = [
       '--------- beginning of main',
       '09-18 10:22:01.010 1200 1200 I ActivityManager: Started demo application',
@@ -405,6 +446,7 @@
     if (d.tab) { state[d.tool].tab = d.tab; renderResult(d.tool); document.querySelector(`.tab.active[data-tool="${d.tool}"]`)?.focus({ preventScroll: true }); }
     if (d.tag) { state.logcat.filters = { tag: d.tag }; state.logcat.page = 0; state.logcat.tab = 'explorer'; renderResult('logcat'); }
     if (d.context) openContext(d.tool, Number(d.context));
+    if (d.package != null) PackagesView.showDetails(state.packages.summary, d.package, packageUI);
     if (d.close) $(d.close).close();
     if (d.download) {
       const s = state[d.download].summary; if (!s) return;
@@ -427,9 +469,9 @@
     contextRequestId++;
   });
   window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
-  window.addEventListener('beforeunload', () => { state.bugreport.worker?.terminate(); state.logcat.worker?.terminate(); });
+  window.addEventListener('beforeunload', () => { for (const tool of Object.keys(titles)) state[tool].worker?.terminate(); });
   document.addEventListener('dragover', event => event.preventDefault());
   document.addEventListener('drop', event => event.preventDefault());
-  for (const tool of ['bugreport', 'logcat']) renderTool(tool);
+  for (const tool of Object.keys(titles)) renderTool(tool);
   navigate(location.hash.slice(1));
 })();

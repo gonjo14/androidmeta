@@ -11,20 +11,355 @@ const AnalysisConfig = Object.freeze({
   CONTEXT_BEFORE: 12,
   CONTEXT_AFTER: 32,
   CONTEXT_LINE_CHARS: 16_000,
+  MAX_PACKAGE_BYTES: 20 * 1024 * 1024,
+  PACKAGE_LIMIT_LABEL: '20 MiB',
+  MAX_PACKAGES: 10_000,
+  MAX_PACKAGE_FILES: 100_000,
+  PACKAGE_PAGE_SIZE: 50,
 });
 
 // Metadata checks must run before reading bytes, on both sides of the worker.
-function validateCapture(file) {
+function validateCapture(file, tool = 'logcat') {
   if (!file || typeof file.name !== 'string' || !Number.isSafeInteger(file.size) || file.size < 0) {
     return 'Choose a valid file from your device.';
   }
-  if (file.size === 0) return 'This file is empty. Choose a bugreport or logcat capture.';
-  if (file.size > AnalysisConfig.MAX_FILE_BYTES) {
-    return `This file exceeds the ${AnalysisConfig.FILE_LIMIT_LABEL} limit. Choose a smaller capture.`;
+  if (file.size === 0) return 'This file is empty. Choose a capture with data.';
+  const packages = tool === 'packages';
+  const limit = packages ? AnalysisConfig.MAX_PACKAGE_BYTES : AnalysisConfig.MAX_FILE_BYTES;
+  const label = packages ? AnalysisConfig.PACKAGE_LIMIT_LABEL : AnalysisConfig.FILE_LIMIT_LABEL;
+  if (file.size > limit) {
+    return `This file exceeds the ${label} limit. Choose a smaller capture.`;
   }
+  if (packages) return /\.json$/i.test(file.name) ? null : 'Choose a packages.json inventory file.';
   if (!/\.(txt|log|zip)$/i.test(file.name)) return 'Choose a .txt, .log, or .zip file.';
   return null;
 }
+
+// Analyses inventory evidence only. It does not read APKs or perform reputation lookups.
+const PackageAnalysis = (() => {
+  'use strict';
+  const VERSION = 1;
+  const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const isHash = value => /^[a-f0-9]{64}$/i.test(value || '');
+
+  function string(value, path) {
+    if (value == null) return null;
+    if (typeof value !== 'string') throw new Error(`${path} must be a string or null.`);
+    return value.trim() || null;
+  }
+
+  function boolean(value, path) {
+    if (value == null) return null;
+    if (typeof value !== 'boolean') throw new Error(`${path} must be true, false, or null.`);
+    return value;
+  }
+
+  function certificate(value, path) {
+    if (value == null) return null;
+    if (!isObject(value)) throw new Error(`${path} must be an object or null.`);
+    const result = {};
+    for (const key of ['Md5', 'Sha1', 'Sha256', 'ValidFrom', 'ValidTo', 'Issuer', 'Subject', 'SignatureAlgorithm']) {
+      result[key] = string(value[key], `${path}.${key}`);
+      if (['ValidFrom', 'ValidTo'].includes(key) && /^0001-01-01(?:T|$)/.test(result[key] || '')) result[key] = null;
+    }
+    const serial = value.SerialNumber;
+    if (serial != null && typeof serial !== 'string' && !Number.isSafeInteger(serial)) {
+      throw new Error(`${path}.SerialNumber must be a string, safe integer, or null.`);
+    }
+    result.SerialNumber = serial == null ? null : String(serial).trim() || null;
+    return Object.values(result).some(item => item !== null) ? result : null;
+  }
+
+  function normalizeFile(value, packageIndex, fileIndex) {
+    const evidence = `$[${packageIndex}].files[${fileIndex}]`;
+    if (!isObject(value)) throw new Error(`${evidence} must be an object.`);
+    const cert = certificate(value.certificate, `${evidence}.certificate`);
+    const verified = boolean(value.verified_certificate, `${evidence}.verified_certificate`);
+    const trusted = boolean(value.trusted_certificate, `${evidence}.trusted_certificate`);
+    const certificateError = string(value.certificate_error, `${evidence}.certificate_error`);
+    const hash = string(value.sha256, `${evidence}.sha256`);
+    return {
+      source_index: fileIndex,
+      evidence,
+      path: string(value.path, `${evidence}.path`),
+      local_name: string(value.local_name, `${evidence}.local_name`),
+      sha256: isHash(hash) ? hash.toLowerCase() : hash,
+      sha256_status: !hash ? 'missing' : isHash(hash) ? 'recorded' : 'invalid',
+      error: string(value.error, `${evidence}.error`),
+      certificate: cert,
+      verified_certificate: verified,
+      trusted_certificate: trusted,
+      certificate_error: certificateError,
+      // False plus absent certificate fields is not evidence of a bad signature.
+      certificate_status: certificateError ? 'error-reported' : verified === true ? 'verified-reported' : cert ? 'metadata-only' : 'unknown',
+    };
+  }
+
+  function normalizePackage(value, index) {
+    const evidence = `$[${index}]`;
+    if (!isObject(value)) throw new Error(`${evidence} must be a package object.`);
+    const name = string(value.name, `${evidence}.name`);
+    if (!name) throw new Error(`${evidence}.name must contain a package name.`);
+    if (name.length > 512) throw new Error(`${evidence}.name is too long.`);
+    const files = value.files ?? [];
+    if (!Array.isArray(files)) throw new Error(`${evidence}.files must be an array.`);
+    const uid = value.uid ?? null;
+    if (uid !== null && (!Number.isSafeInteger(uid) || uid < 0)) throw new Error(`${evidence}.uid must be a non-negative integer or null.`);
+    const system = boolean(value.system, `${evidence}.system`);
+    const thirdParty = boolean(value.third_party, `${evidence}.third_party`);
+    const installer = string(value.installer, `${evidence}.installer`);
+    return {
+      source_index: index, evidence, name, uid,
+      installer: installer?.toLowerCase() === 'null' ? null : installer,
+      system, third_party: thirdParty,
+      disabled: boolean(value.disabled, `${evidence}.disabled`),
+      classification: system === true && thirdParty === true ? 'conflicting' : system === true ? 'system' : thirdParty === true ? 'third-party' : 'unknown',
+      files: files.map((file, fileIndex) => normalizeFile(file, index, fileIndex)),
+      findings: [],
+    };
+  }
+
+  function analyse(text, source = 'packages.json', progress = () => {}) {
+    let input;
+    try { input = JSON.parse(text.replace(/^\uFEFF/, '')); }
+    catch (_) { throw new Error('Invalid JSON. Export the package inventory as UTF-8 JSON and try again.'); }
+    if (!Array.isArray(input)) throw new Error('Expected an array of Android packages with name and files fields. An npm package.json or an exported analysis report is a different format.');
+    if (input.length > AnalysisConfig.MAX_PACKAGES) throw new Error(`This inventory exceeds ${AnalysisConfig.MAX_PACKAGES.toLocaleString('en-US')} package records.`);
+    let fileCount = 0;
+    for (const entry of input) {
+      if (Array.isArray(entry?.files)) fileCount += entry.files.length;
+      if (fileCount > AnalysisConfig.MAX_PACKAGE_FILES) throw new Error('This inventory contains too many APK file entries. Split the inventory and try again.');
+    }
+    progress('Validating package fields…', true);
+    const packages = input.map(normalizePackage);
+    const names = new Map(), uids = new Map(), installers = new Map();
+    for (const pkg of packages) {
+      names.set(pkg.name, (names.get(pkg.name) || 0) + 1);
+      if (pkg.uid !== null) uids.set(pkg.uid, (uids.get(pkg.uid) || 0) + 1);
+      installers.set(pkg.installer, (installers.get(pkg.installer) || 0) + 1);
+    }
+    const counts = {
+      packages: packages.length, distinct_names: names.size, system: 0, third_party: 0,
+      unclassified: 0, disabled: 0, disabled_unknown: 0, apk_files: fileCount,
+      installer_not_recorded: 0, third_party_installer_not_recorded: 0,
+      sha256_recorded: 0, sha256_missing: 0, sha256_invalid: 0,
+      certificate_metadata: 0, certificate_verified_reported: 0, certificate_unknown: 0,
+      certificate_errors: 0, collection_errors: 0, packages_with_findings: 0,
+      packages_with_data_errors: 0, system_packages_in_data_app: 0,
+      shared_uid_groups: [...uids.values()].filter(count => count > 1).length,
+    };
+    for (const pkg of packages) {
+      const add = (code, level, detail, evidence = pkg.evidence) => pkg.findings.push({ code, level, detail, evidence });
+      if (pkg.classification === 'system') counts.system++;
+      else if (pkg.classification === 'third-party') counts.third_party++;
+      else counts.unclassified++;
+      if (pkg.disabled === true) counts.disabled++;
+      if (pkg.disabled === null) counts.disabled_unknown++;
+      if (pkg.installer === null) {
+        counts.installer_not_recorded++;
+        if (pkg.classification === 'third-party') {
+          counts.third_party_installer_not_recorded++;
+          add('installer-not-recorded', 'info', 'No installer is recorded for this third-party package. The installation source cannot be established from this inventory.', `${pkg.evidence}.installer`);
+        }
+      }
+      if (pkg.classification === 'conflicting') add('classification-conflict', 'review', 'Both system and third_party are true. Check the inventory collector.');
+      if (!pkg.files.length) add('files-not-recorded', 'info', 'No APK file entries were supplied.', `${pkg.evidence}.files`);
+      if (names.get(pkg.name) > 1) add('duplicate-package-name', 'info', `This name occurs ${names.get(pkg.name)} times. Records are kept separately; this schema does not identify Android user profiles.`, `${pkg.evidence}.name`);
+      if (pkg.classification === 'system' && pkg.files.some(file => file.path?.startsWith('/data/app/'))) counts.system_packages_in_data_app++;
+      for (const file of pkg.files) {
+        counts[`sha256_${file.sha256_status}`]++;
+        if (file.sha256_status !== 'recorded') add(`sha256-${file.sha256_status}`, file.sha256_status === 'invalid' ? 'review' : 'info', file.sha256_status === 'invalid' ? 'The recorded APK SHA-256 is not 64 hexadecimal characters.' : 'No APK SHA-256 is recorded.', `${file.evidence}.sha256`);
+        if (!file.path) add('path-not-recorded', 'info', 'No APK path is recorded.', `${file.evidence}.path`);
+        if (file.certificate) counts.certificate_metadata++;
+        if (file.verified_certificate === true) counts.certificate_verified_reported++;
+        if (file.certificate_status === 'unknown') counts.certificate_unknown++;
+        if (file.error) { counts.collection_errors++; add('collection-error', 'review', file.error, `${file.evidence}.error`); }
+        if (file.certificate_error) { counts.certificate_errors++; add('certificate-error', 'review', file.certificate_error, `${file.evidence}.certificate_error`); }
+      }
+      if (pkg.findings.length) counts.packages_with_findings++;
+      if (pkg.findings.some(finding => finding.level === 'review')) counts.packages_with_data_errors++;
+    }
+    return {
+      tool: 'packages', version: VERSION, source_file: source, analyzed_at: new Date().toISOString(),
+      counts, packages,
+      installers: [...installers].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))),
+      notes: [
+        'All values describe the supplied inventory. APK contents were not provided or examined.',
+        'Recorded SHA-256 values are checked for format only; they are not recomputed from APK bytes or checked against a reputation service.',
+        'Empty certificate fields and false verification/trust flags do not establish an invalid signature. Verification is not established unless a result is explicitly recorded.',
+        'Installer names, system flags, shared UIDs, and package names do not establish whether an app is safe or malicious.',
+        'System packages under /data/app can be updated system applications. Their path alone does not change their reported classification.',
+        'Permissions, accessibility status, version numbers, install times, and behaviour are not available in this schema.',
+      ],
+      limits: { package_records: AnalysisConfig.MAX_PACKAGES, apk_files: AnalysisConfig.MAX_PACKAGE_FILES, file_bytes: AnalysisConfig.MAX_PACKAGE_BYTES },
+    };
+  }
+
+  function matches(pkg, filters = {}) {
+    if (filters.type && pkg.classification !== filters.type) return false;
+    if (filters.disabled === 'true' && pkg.disabled !== true) return false;
+    if (filters.disabled === 'false' && pkg.disabled !== false) return false;
+    if (filters.disabled === 'unknown' && pkg.disabled !== null) return false;
+    if (filters.installer && pkg.installer !== filters.installer) return false;
+    if (filters.review === 'missing-installer' && pkg.installer !== null) return false;
+    if (filters.review === 'third-party-missing-installer' && !(pkg.installer === null && pkg.classification === 'third-party')) return false;
+    if (filters.review === 'findings' && !pkg.findings.length) return false;
+    if (filters.review === 'data-errors' && !pkg.findings.some(finding => finding.level === 'review')) return false;
+    if (filters.review === 'certificate-unknown' && !pkg.files.some(file => file.certificate_status === 'unknown')) return false;
+    const query = (filters.query || '').trim().toLowerCase();
+    if (!query) return true;
+    if (`${pkg.name} ${pkg.uid ?? ''} ${pkg.installer ?? ''}`.toLowerCase().includes(query)) return true;
+    return pkg.files.some(file => `${file.path ?? ''} ${file.sha256 ?? ''} ${file.certificate?.Sha256 ?? ''}`.toLowerCase().includes(query));
+  }
+
+  function page(packages, filters = {}, requested = 0) {
+    const matchesFound = packages.filter(pkg => matches(pkg, filters));
+    const pages = Math.max(1, Math.ceil(matchesFound.length / AnalysisConfig.PACKAGE_PAGE_SIZE));
+    const value = Number(requested);
+    const current = Math.min(pages - 1, Math.max(0, Number.isFinite(value) ? Math.floor(value) : 0));
+    return { total: matchesFound.length, page: current, pages, records: matchesFound.slice(current * AnalysisConfig.PACKAGE_PAGE_SIZE, (current + 1) * AnalysisConfig.PACKAGE_PAGE_SIZE) };
+  }
+
+  function isSummary(value) {
+    if (!isObject(value) || value.tool !== 'packages' || value.version !== VERSION || !isObject(value.counts)) return false;
+    if (!Array.isArray(value.packages) || value.packages.length > AnalysisConfig.MAX_PACKAGES || !Array.isArray(value.installers) || !Array.isArray(value.notes)) return false;
+    return value.packages.every(pkg => isObject(pkg) && typeof pkg.name === 'string' && Number.isSafeInteger(pkg.source_index) && Array.isArray(pkg.files) && Array.isArray(pkg.findings) && pkg.files.every(isObject) && pkg.findings.every(isObject)) && value.installers.every(row => Array.isArray(row) && row.length === 2);
+  }
+
+  return { analyse, matches, page, isSummary };
+})();
+
+const PackagesView = (() => {
+  'use strict';
+  const classification = { system: 'System (reported)', 'third-party': 'Third-party (reported)', unknown: 'Not established', conflicting: 'Conflicting flags' };
+  const certificateLabels = { 'verified-reported': 'Verified according to source', 'error-reported': 'Certificate error reported', 'metadata-only': 'Metadata present; verification not established', unknown: 'Verification not established' };
+  const recordedBoolean = value => value === true ? 'True' : value === false ? 'False' : 'Not recorded';
+
+  function render(summary, view, helpers) {
+    const { $, escapeHTML, number, stat, panel, table, notes } = helpers;
+    const c = summary.counts;
+    const certificateNote = c.certificate_metadata === 0
+      ? `No certificate metadata is populated in the ${number(c.apk_files)} APK entries.`
+      : `${number(c.certificate_metadata)} of ${number(c.apk_files)} APK entries contain certificate metadata.`;
+    $('packages-results').innerHTML = `
+      <div class="stats">
+        ${stat('Packages', c.packages, `${number(c.distinct_names)} distinct names`)}
+        ${stat('System', c.system, 'Classification reported by the collector')}
+        ${stat('Third-party', c.third_party, 'Classification reported by the collector')}
+        ${stat('Disabled', c.disabled, 'State reported by the collector')}
+      </div>
+      <div class="notice"><strong>${escapeHTML(certificateNote)}</strong><p>${number(c.certificate_verified_reported)} entries report successful verification. Empty certificate fields and false flags leave verification unestablished. No APK bytes are examined here.</p></div>
+      <div class="split equal">
+        ${panel('Inventory coverage', '', table(['Evidence', 'Count'], [
+          ['APK file entries', number(c.apk_files)],
+          ['Recorded SHA-256 values with valid format', number(c.sha256_recorded)],
+          ['Missing / malformed SHA-256 values', `${number(c.sha256_missing)} / ${number(c.sha256_invalid)}`],
+          ['Packages with data errors to review', number(c.packages_with_data_errors)],
+          ['Third-party packages without a recorded installer', number(c.third_party_installer_not_recorded)],
+          ['Shared UID groups', number(c.shared_uid_groups)],
+          ['System packages with a file in /data/app', number(c.system_packages_in_data_app)],
+        ]))}
+        ${panel('Recorded installers', 'Names describe the inventory; they do not establish app trust.', table(['Installer', 'Packages'], summary.installers.map(([name, count]) => [escapeHTML(name ?? 'Not recorded'), number(count)])))}
+      </div>
+      <section class="panel">
+        <h2>Package explorer</h2>
+        <div class="filters">
+          <div class="field"><label for="package-query">Search</label><input id="package-query" type="search" placeholder="Package, UID, installer, path, SHA-256…"></div>
+          <div class="field"><label for="package-type">Reported type</label><select id="package-type"><option value="">All types</option><option value="system">System</option><option value="third-party">Third-party</option><option value="unknown">Unknown</option><option value="conflicting">Conflicting</option></select></div>
+          <div class="field"><label for="package-disabled">Reported state</label><select id="package-disabled"><option value="">All states</option><option value="false">Not disabled</option><option value="true">Disabled</option><option value="unknown">Not recorded</option></select></div>
+          <div class="field"><label for="package-installer">Installer</label><select id="package-installer"><option value="">All installers</option>${summary.installers.filter(([name]) => name !== null).map(([name]) => `<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join('')}</select></div>
+          <div class="field"><label for="package-review">Evidence filter</label><select id="package-review"><option value="">All packages</option><option value="third-party-missing-installer">Third-party; installer not recorded</option><option value="missing-installer">Any type; installer not recorded</option><option value="findings">Has review notes</option><option value="data-errors">Data errors reported</option><option value="certificate-unknown">Has an APK with unknown verification</option></select></div>
+        </div>
+        <div class="filter-footer"><span id="package-count" role="status"></span><button class="button small" id="package-clear">Clear filters</button></div>
+        <div id="package-list"></div>
+        <div class="pagination"><span id="package-page"></span><div class="button-row"><button class="button small" id="package-prev">Previous</button><button class="button small" id="package-next">Next</button></div></div>
+      </section>
+      ${panel('How to interpret this inventory', '', notes(summary.notes))}`;
+
+    function updateRows() {
+      const result = PackageAnalysis.page(summary.packages, view.filters, view.page);
+      view.page = result.page;
+      $('package-count').textContent = `${number(result.total)} matching packages`;
+      $('package-page').textContent = `Page ${number(result.page + 1)} of ${number(result.pages)}`;
+      $('package-prev').disabled = result.page === 0;
+      $('package-next').disabled = result.page + 1 >= result.pages;
+      $('package-list').innerHTML = table(['Package / UID', 'Reported type / state', 'Installer', 'APK files', 'Notes', 'Evidence'], result.records.map(pkg => [
+        `${escapeHTML(pkg.name)}<br><span class="tiny">UID ${escapeHTML(pkg.uid ?? 'Not recorded')}</span>`,
+        `${escapeHTML(classification[pkg.classification])}<br><span class="tiny">${pkg.disabled === true ? 'Disabled' : pkg.disabled === false ? 'Not disabled' : 'Disabled state not recorded'}</span>`,
+        escapeHTML(pkg.installer ?? 'Not recorded'),
+        number(pkg.files.length),
+        pkg.findings.length ? `${number(pkg.findings.length)} review note(s)` : 'No inventory issues identified',
+        `<button class="button small" data-package="${pkg.source_index}">Inspect record</button>`,
+      ]));
+    }
+
+    for (const key of ['query', 'type', 'disabled', 'installer', 'review']) {
+      const input = $(`package-${key}`);
+      input.value = view.filters[key] || '';
+      input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', () => {
+        view.filters[key] = input.value;
+        view.page = 0;
+        updateRows();
+      });
+    }
+    $('package-prev').onclick = () => { view.page--; updateRows(); };
+    $('package-next').onclick = () => { view.page++; updateRows(); };
+    $('package-clear').onclick = () => {
+      view.filters = {}; view.page = 0;
+      for (const key of ['query', 'type', 'disabled', 'installer', 'review']) $(`package-${key}`).value = '';
+      updateRows();
+    };
+    updateRows();
+  }
+
+  function showDetails(summary, sourceIndex, helpers) {
+    if (!summary) return;
+    const pkg = summary.packages.find(record => record.source_index === Number(sourceIndex));
+    if (!pkg) return;
+    const { $, escapeHTML, number, panel, table } = helpers;
+    $('package-title').textContent = pkg.name;
+    $('package-meta').textContent = `${summary.source_file} · JSON record ${pkg.evidence}`;
+    $('package-content').innerHTML = panel('Reported package fields', '', table(['Field', 'Value'], [
+      ['UID', escapeHTML(pkg.uid ?? 'Not recorded')],
+      ['Installer', escapeHTML(pkg.installer ?? 'Not recorded')],
+      ['system', recordedBoolean(pkg.system)],
+      ['third_party', recordedBoolean(pkg.third_party)],
+      ['disabled', recordedBoolean(pkg.disabled)],
+    ])) + panel('Review notes', '', pkg.findings.length ? pkg.findings.map(finding => `<div class="finding"><p>${escapeHTML(finding.detail)}</p><span class="tiny">${escapeHTML(finding.evidence)} · ${escapeHTML(finding.code)}</span></div>`).join('') : '<p>No inventory issues were identified by these checks.</p>')
+      + panel('APK file evidence', `${number(pkg.files.length)} file entries. Hashes and certificate flags are reported metadata.`, pkg.files.map(file => `
+        <article class="finding"><h3>${escapeHTML(file.path ?? 'Path not recorded')}</h3>
+          <p class="tiny">${escapeHTML(file.evidence)}</p>
+          <dl class="key-value">
+            <dt>APK SHA-256</dt><dd><code>${escapeHTML(file.sha256 ?? 'Not recorded')}</code></dd>
+            <dt>Hash format</dt><dd>${escapeHTML(file.sha256_status)}</dd>
+            <dt>Certificate status</dt><dd>${escapeHTML(certificateLabels[file.certificate_status])}</dd>
+            <dt>verified_certificate (source)</dt><dd>${recordedBoolean(file.verified_certificate)}</dd>
+            <dt>trusted_certificate (source)</dt><dd>${recordedBoolean(file.trusted_certificate)}</dd>
+            <dt>Collection error</dt><dd>${escapeHTML(file.error ?? 'None reported')}</dd>
+            <dt>Certificate error</dt><dd>${escapeHTML(file.certificate_error ?? 'None reported')}</dd>
+          </dl>
+          ${file.certificate ? `<details><summary>Recorded certificate metadata</summary><pre>${escapeHTML(JSON.stringify(file.certificate, null, 2))}</pre></details>` : '<p class="tiny">No populated certificate metadata in this entry.</p>'}
+        </article>`).join('') || '<p>No file entries recorded.</p>');
+    if (!$('package-dialog').open) $('package-dialog').showModal();
+  }
+
+  function markdown(summary) {
+    const block = value => String(value ?? '').split('\n').map(line => `    ${line}`).join('\n');
+    const lines = ['# Package inventory analysis', '', 'Source:', '', block(summary.source_file), '', `Analysed: ${summary.analyzed_at}`, '', '## Counts', ''];
+    for (const [key, count] of Object.entries(summary.counts)) lines.push(`- ${key.replace(/_/g, ' ')}: ${count}`);
+    lines.push('', '## Interpretation', '', ...summary.notes.map(note => `- ${note}`), '', '## Recorded installers', '');
+    for (const [installer, count] of summary.installers) lines.push(block(`${installer ?? 'Not recorded'}: ${count}`), '');
+    lines.push('## Package evidence', '');
+    for (const pkg of summary.packages) {
+      lines.push(`### Record ${pkg.source_index}`, '', block(`${pkg.name}\nSource: ${pkg.evidence}\nUID: ${pkg.uid ?? 'Not recorded'}\nType: ${classification[pkg.classification]}\nDisabled: ${recordedBoolean(pkg.disabled)}\nInstaller: ${pkg.installer ?? 'Not recorded'}`), '');
+      for (const finding of pkg.findings) lines.push(block(`${finding.evidence}: ${finding.detail}`), '');
+      for (const file of pkg.files) lines.push(block(`${file.evidence}\nPath: ${file.path ?? 'Not recorded'}\nAPK SHA-256: ${file.sha256 ?? 'Not recorded'}\nCertificate: ${certificateLabels[file.certificate_status]}\nverified_certificate: ${recordedBoolean(file.verified_certificate)}\ntrusted_certificate: ${recordedBoolean(file.trusted_certificate)}\nCollection error: ${file.error ?? 'None reported'}\nCertificate error: ${file.certificate_error ?? 'None reported'}`), '');
+    }
+    return lines.join('\n');
+  }
+
+  return { render, showDetails, markdown };
+})();
 
 (() => {
   'use strict';
@@ -36,18 +371,19 @@ function validateCapture(file) {
   function createToolState() {
     return { worker: null, summary: null, tab: 'overview', busy: false, fileSize: 0, page: 0, queryId: 0, filters: {} };
   }
-  const state = { bugreport: createToolState(), logcat: createToolState() };
-  const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser' };
+  const state = { bugreport: createToolState(), logcat: createToolState(), packages: createToolState() };
+  const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser', packages: 'Package Analyser' };
   const historyKey = 'android_tools_history_v2';
   let route = 'home', toastTimer = null, queryTimer = null, contextTool = null, contextTarget = 1;
   let contextRequestId = 0;
+  const packageUI = { $, escapeHTML, number, stat, panel, table, notes };
 
   function toast(message) {
     clearTimeout(toastTimer); $('toast').textContent = message; $('toast').hidden = false;
     toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500);
   }
   function navigate(next) {
-    route = ['home', 'bugreport', 'logcat'].includes(next) ? next : 'home';
+    route = ['home', ...Object.keys(titles)].includes(next) ? next : 'home';
     document.querySelectorAll('.page').forEach(page => { page.hidden = page.id !== route; });
     document.querySelectorAll('.nav-item').forEach(button => {
       const active = button.dataset.route === route;
@@ -62,12 +398,39 @@ function validateCapture(file) {
 
   function renderTool(tool) {
     const log = tool === 'logcat';
+    const packages = tool === 'packages';
+    const view = {
+      logcat: {
+        eyebrow: 'LOGCAT INVESTIGATION', noun: 'logcat file',
+        subtitle: 'Find the important events in logcat.txt, then inspect the lines around them.',
+        upload: 'Open a saved logcat capture or choose a log file inside a ZIP.',
+        open: 'Supports threadtime, time, brief, and long logcat formats, including standard year and UID fields.',
+        investigate: 'Separate crash markers from ordinary error logging. Search by message, tag, PID, buffer, or priority.',
+      },
+      bugreport: {
+        eyebrow: 'DEVICE DIAGNOSTICS', noun: 'bugreport',
+        subtitle: 'Review crashes, responsiveness, battery statistics, and app access in one capture.',
+        upload: 'Open a bugreport ZIP or the extracted text report.',
+        open: 'ZIP contents are inspected first so you can choose the right text report.',
+        investigate: 'Check section coverage, crash details, wakelock activity, and observed package access.',
+      },
+      packages: {
+        eyebrow: 'PACKAGE INVENTORY', noun: 'packages.json',
+        subtitle: 'Inspect installed-package metadata, APK hashes, installers, and certificate coverage.',
+        upload: 'Open an Android package inventory exported as a JSON array.',
+        open: 'Each record contains a package name and its APK file metadata. Parsing runs locally.',
+        investigate: 'Filter reported system and third-party packages, disabled state, installers, and missing or inconsistent data.',
+      },
+    }[tool];
+    const uploadHint = packages
+      ? `JSON · UP TO ${AnalysisConfig.PACKAGE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_PACKAGES)} PACKAGES · PROCESSED LOCALLY`
+      : `TXT, LOG, ZIP · UP TO ${AnalysisConfig.FILE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_LINES)} LINES · PROCESSED LOCALLY`;
     $(tool).innerHTML = `
-      <div class="page-heading"><div><div class="eyebrow">${log ? 'LOGCAT INVESTIGATION' : 'DEVICE DIAGNOSTICS'}</div><h1>${titles[tool]}</h1><p class="subtitle">${log ? 'Find the important events in logcat.txt, then inspect the lines around them.' : 'Review crashes, responsiveness, battery statistics, and app access in one capture.'}</p></div><button class="button" data-demo="${tool}">Try a sample</button></div>
+      <div class="page-heading"><div><div class="eyebrow">${view.eyebrow}</div><h1>${titles[tool]}</h1><p class="subtitle">${view.subtitle}</p></div><button class="button" data-demo="${tool}">Try a sample</button></div>
       <div id="${tool}-upload" class="upload-panel" data-drop="${tool}">
-        <div class="upload-icon">${icon('upload')}</div><h2>Drop your ${log ? 'logcat file' : 'bugreport'} here</h2><p>${log ? 'Open a saved logcat capture or choose a log file inside a ZIP.' : 'Open a bugreport ZIP or the extracted text report.'}</p>
-        <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose file</button></div><p class="upload-hint">TXT, LOG, ZIP · UP TO ${AnalysisConfig.FILE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_LINES)} LINES · PROCESSED LOCALLY</p>
-        <input id="${tool}-file" type="file" accept=".txt,.log,.zip" hidden aria-label="Choose ${log ? 'logcat' : 'bugreport'} file">
+        <div class="upload-icon">${icon('upload')}</div><h2>Drop your ${view.noun} here</h2><p>${view.upload}</p>
+        <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose file</button></div><p class="upload-hint">${uploadHint}</p>
+        <input id="${tool}-file" type="file" accept="${packages ? '.json' : '.txt,.log,.zip'}" hidden aria-label="Choose ${view.noun} file">
       </div>
       <label class="remember"><input id="${tool}-remember" type="checkbox">Remember analysis summaries in this browser</label>
       <div id="${tool}-error" class="notice error" role="alert" hidden></div>
@@ -75,7 +438,7 @@ function validateCapture(file) {
       <div id="${tool}-archive" class="archive-picker" hidden><h2>Choose a file from this archive</h2><p>The archive contains several text files. Select the capture to analyse.</p><label class="field-label" for="${tool}-entry">File in archive</label><select id="${tool}-entry"></select><div class="button-row"><button class="button primary" data-entry="${tool}">Analyse selected file</button><button class="button" data-cancel="${tool}">Cancel</button></div></div>
       <div id="${tool}-filebar" class="file-bar" hidden><div class="file-info">${icon('file')}<div><span class="filename" id="${tool}-filename"></span><span class="file-meta" id="${tool}-filemeta"></span></div></div><div class="button-row report-actions"><button class="button small" data-download="${tool}" data-format="json">${icon('download')}JSON</button><button class="button small" data-download="${tool}" data-format="md">Report</button><button class="button small" data-reset="${tool}">New file</button></div></div>
       <div id="${tool}-results" hidden></div>
-      <div id="${tool}-help" class="help-grid"><div class="help-card"><span class="step">01 / OPEN</span><h3>Start with your capture</h3><p>${log ? 'Supports threadtime, time, brief, and long logcat formats, including standard year and UID fields.' : 'ZIP contents are inspected first so you can choose the right text report.'}</p></div><div class="help-card"><span class="step">02 / INVESTIGATE</span><h3>Follow the evidence</h3><p>${log ? 'Separate crash markers from ordinary error logging. Search by message, tag, PID, buffer, or priority.' : 'Check section coverage, crash details, wakelock activity, and observed package access.'}</p></div><div class="help-card"><span class="step">03 / EXPORT</span><h3>Take the findings with you</h3><p>Download a JSON summary or a readable Markdown report.${log ? ' Export matching raw log entries too.' : ''}</p></div></div>`;
+      <div id="${tool}-help" class="help-grid"><div class="help-card"><span class="step">01 / OPEN</span><h3>Start with your capture</h3><p>${view.open}</p></div><div class="help-card"><span class="step">02 / INVESTIGATE</span><h3>Follow the evidence</h3><p>${view.investigate}</p></div><div class="help-card"><span class="step">03 / EXPORT</span><h3>Take the findings with you</h3><p>Download a JSON summary or a readable Markdown report.${log ? ' Export matching raw log entries too.' : ''}</p></div></div>`;
     $(`${tool}-file`).addEventListener('change', event => {
       const file = event.target.files[0]; if (file) openFile(tool, file); event.target.value = '';
     });
@@ -103,6 +466,7 @@ function validateCapture(file) {
     for (const id of ['loading', 'error', 'archive', 'filebar', 'results']) $(`${tool}-${id}`).hidden = true;
     $(`${tool}-results`).replaceChildren(); $(`${tool}-upload`).hidden = false; $(`${tool}-help`).hidden = false;
     $(tool).setAttribute('aria-busy', 'false');
+    if (tool === 'packages' && $('package-dialog').open) $('package-dialog').close();
     if (contextTool === tool) {
       contextRequestId++;
       contextTool = null;
@@ -110,7 +474,7 @@ function validateCapture(file) {
     }
   }
   function openFile(tool, file) {
-    const validationError = validateCapture(file);
+    const validationError = validateCapture(file, tool);
     if (validationError) { showError(tool, validationError); return; }
     reset(tool);
     state[tool].fileSize = file.size;
@@ -194,7 +558,9 @@ function validateCapture(file) {
     $(`${tool}-filename`).textContent = s.source_file;
     $(`${tool}-filemeta`).textContent = `${state[tool].worker ? bytes(state[tool].fileSize) + ' · ' : 'Saved summary · '}${new Date(s.analyzed_at).toLocaleString()}`;
     const el = $(`${tool}-results`);
-    if (tool === 'logcat') {
+    if (tool === 'packages') {
+      PackagesView.render(s, state.packages, packageUI);
+    } else if (tool === 'logcat') {
       el.innerHTML = `<div class="stats">${stat('Log entries', s.parsed_records, `${number(s.physical_lines)} source lines`)}${stat('Error records', s.levels.E, 'Priority E · not all are crashes', s.levels.E ? 'danger' : '')}${stat('Warning records', s.levels.W, 'Priority W', s.levels.W ? 'warn' : '')}${stat('Crash markers', s.counts.native + s.counts.java, `${number(s.counts.anr)} ANR markers`, s.counts.native + s.counts.java ? 'danger' : '')}</div>${tabs(tool, [['overview', 'Overview'], ['findings', `Findings · ${number(s.finding_groups)}`], ['explorer', 'Log explorer']])}<div id="logcat-tab-content"></div>`;
       if (state[tool].tab === 'overview') renderLogOverview(s);
       if (state[tool].tab === 'findings') renderLogFindings(s);
@@ -342,6 +708,7 @@ function validateCapture(file) {
     setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
   function markdown(s) {
+    if (s.tool === 'packages') return PackagesView.markdown(s);
     const block = text => String(text ?? '').split('\n').map(line => `    ${line}`).join('\n');
     const lines = [`# ${titles[s.tool] || 'Bug Report Analyser'} report`, '', 'Source:', '', block(s.source_file), '', `Analysed: ${s.analyzed_at}`, '', '## Counts', ''];
     for (const [name, value] of Object.entries(s.counts)) lines.push(`- ${name.replace(/_/g, ' ')}: ${value}`);
@@ -374,7 +741,7 @@ function validateCapture(file) {
         const legacy = JSON.parse(localStorage.getItem('bugreport_analyzer_history_v1') || '[]');
         if (Array.isArray(legacy)) value = legacy.filter(e => e?.summary?.counts && e.summary.battery_diagnosis && e.summary.crash_diagnosis && e.summary.stalkerware_indicators).map(e => ({ ...e, summary: { ...e.summary, tool: 'bugreport', coverage: { sectioned: e.summary.sections_found?.[0] !== 'FULL_TEXT', battery: Boolean(e.summary.wakelocks?.length), packages: Boolean(e.summary.stalkerware_indicators.contributors?.length) }, notes: ['Saved by the previous analyser. Reopen the capture to refresh coverage and run the updated checks.'] } }));
       }
-      const valid = Array.isArray(value) ? value.filter(e => e?.summary && typeof e.summary.source_file === 'string' && e.summary.counts && ['bugreport', 'logcat'].includes(e.summary.tool)) : [];
+      const valid = Array.isArray(value) ? value.filter(e => e?.summary && typeof e.summary.source_file === 'string' && e.summary.counts && Object.keys(titles).includes(e.summary.tool) && (e.summary.tool !== 'packages' || PackageAnalysis.isSummary(e.summary))) : [];
       return valid.slice(0, 10);
     } catch (_) { return []; }
   }
@@ -396,6 +763,15 @@ function validateCapture(file) {
   }
 
   function demo(tool) {
+    if (tool === 'packages') {
+      const inventory = [
+        { name: 'com.example.system', uid: 10001, system: true, third_party: false, disabled: false, installer: 'null', files: [{ path: '/system/app/Example/base.apk', sha256: 'a'.repeat(64), verified_certificate: false, trusted_certificate: false }] },
+        { name: 'com.example.reader', uid: 10002, system: false, third_party: true, disabled: false, installer: 'com.example.store', files: [{ path: '/data/app/com.example.reader/base.apk', sha256: 'b'.repeat(64), verified_certificate: false }] },
+        { name: 'com.example.notes', uid: 10003, system: false, third_party: true, disabled: true, installer: null, files: [{ path: '/data/app/com.example.notes/base.apk', sha256: 'c'.repeat(64), certificate_error: 'Certificate data was not collected.' }] },
+      ];
+      openFile(tool, new File([JSON.stringify(inventory)], 'sample-packages.json', { type: 'application/json' }));
+      return;
+    }
     const sample = [
       '--------- beginning of main',
       '09-18 10:22:01.010 1200 1200 I ActivityManager: Started demo application',
@@ -433,6 +809,7 @@ function validateCapture(file) {
     if (d.tab) { state[d.tool].tab = d.tab; renderResult(d.tool); document.querySelector(`.tab.active[data-tool="${d.tool}"]`)?.focus({ preventScroll: true }); }
     if (d.tag) { state.logcat.filters = { tag: d.tag }; state.logcat.page = 0; state.logcat.tab = 'explorer'; renderResult('logcat'); }
     if (d.context) openContext(d.tool, Number(d.context));
+    if (d.package != null) PackagesView.showDetails(state.packages.summary, d.package, packageUI);
     if (d.close) $(d.close).close();
     if (d.download) {
       const s = state[d.download].summary; if (!s) return;
@@ -455,9 +832,9 @@ function validateCapture(file) {
     contextRequestId++;
   });
   window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
-  window.addEventListener('beforeunload', () => { state.bugreport.worker?.terminate(); state.logcat.worker?.terminate(); });
+  window.addEventListener('beforeunload', () => { for (const tool of Object.keys(titles)) state[tool].worker?.terminate(); });
   document.addEventListener('dragover', event => event.preventDefault());
   document.addEventListener('drop', event => event.preventDefault());
-  for (const tool of ['bugreport', 'logcat']) renderTool(tool);
+  for (const tool of Object.keys(titles)) renderTool(tool);
   navigate(location.hash.slice(1));
 })();

@@ -10,6 +10,7 @@ function loadUI() {
   const listeners = new Map();
   const timers = new Map();
   const workers = [];
+  const storage = new Map();
   let nextTimer = 0;
   class Element {
     constructor(id, tagName = 'DIV') {
@@ -31,7 +32,7 @@ function loadUI() {
     showModal() { this.open = true; }
     close() { this.open = false; this.events.get('close')?.(); }
   }
-  for (const id of ['home', 'bugreport', 'logcat', 'main', 'breadcrumb', 'toast', 'analysis-worker', 'context-dialog', 'context-title', 'context-meta', 'context-content', 'context-before', 'context-after', 'history-open', 'history-clear']) {
+  for (const id of ['home', 'bugreport', 'logcat', 'packages', 'main', 'breadcrumb', 'toast', 'analysis-worker', 'context-dialog', 'context-title', 'context-meta', 'context-content', 'context-before', 'context-after', 'history-open', 'history-clear', 'history-dialog', 'history-list', 'package-dialog', 'package-title', 'package-meta', 'package-content']) {
     elements.set(id, new Element(id));
   }
   class MockWorker {
@@ -42,7 +43,7 @@ function loadUI() {
   }
   const document = {
     getElementById: id => elements.get(id) || null,
-    querySelectorAll: selector => selector === '.page' ? ['home', 'bugreport', 'logcat'].map(id => elements.get(id)) : [],
+    querySelectorAll: selector => selector === '.page' ? ['home', 'bugreport', 'logcat', 'packages'].map(id => elements.get(id)) : [],
     querySelector: () => null,
     addEventListener: (type, handler) => listeners.set(type, handler),
   };
@@ -50,25 +51,31 @@ function loadUI() {
     document, Worker: MockWorker, Blob, File, Option: class {},
     URL: { createObjectURL: () => 'blob:test-worker', revokeObjectURL() {} },
     location: { hash: '#home' }, history: { replaceState() {} },
-    localStorage: { getItem: () => null },
+    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     setTimeout: callback => { timers.set(++nextTimer, callback); return nextTimer; },
     clearTimeout: id => timers.delete(id),
     window: { Worker: MockWorker, addEventListener() {} },
   });
   vm.runInContext(read('src/config.js'), scope);
+  vm.runInContext(read('src/packages-analysis.js'), scope);
+  vm.runInContext(read('src/packages-view.js'), scope);
   vm.runInContext(read('src/app.js'), scope);
   const file = new File([logLine('evidence')], 'capture.log');
   const analysis = loadAnalysis();
   const parsed = analysis.Logcat.parse(logLine('evidence'));
   const summary = analysis.Logcat.summary(parsed, 'capture.log', analysis.Logcat.signals(parsed));
-  const changeFile = selected => elements.get('logcat-file').events.get('change')({ target: { files: [selected], value: '' } });
+  const packageSummary = analysis.PackageAnalysis.analyse(JSON.stringify([
+    { name: 'com.example.reader', system: false, third_party: true, disabled: false, installer: null, files: [{ path: '/data/app/base.apk', sha256: 'a'.repeat(64) }] },
+    { name: 'com.example.system', system: true, third_party: false, disabled: true, installer: null, files: [{ path: '/system/app/base.apk', sha256: 'b'.repeat(64) }] },
+  ]), 'packages.json');
+  const changeFile = (selected, tool = 'logcat') => elements.get(`${tool}-file`).events.get('change')({ target: { files: [selected], value: '' } });
   const click = dataset => listeners.get('click')({ target: { closest: () => ({ dataset, disabled: false }) } });
-  const open = () => {
-    changeFile(file);
-    workers.at(-1).reply({ type: 'result', summary });
+  const open = (tool = 'logcat', customSummary = null) => {
+    changeFile(tool === 'packages' ? new File(['[]'], 'packages.json') : file, tool);
+    workers.at(-1).reply({ type: 'result', summary: customSummary || (tool === 'packages' ? packageSummary : summary) });
     return workers.at(-1);
   };
-  return { elements, workers, timers, changeFile, click, open, summary };
+  return { elements, workers, timers, storage, changeFile, click, open, summary, packageSummary };
 }
 
 test('UI rejects an oversized file before creating a worker or reading bytes', () => {
@@ -116,4 +123,51 @@ test('UI reset terminates the worker, clears the debounce, and rejects late mess
   assert.equal(ui.timers.size, timersBefore - 1);
   worker.reply({ type: 'result', summary: ui.summary });
   assert.equal(ui.elements.get('logcat-results').hidden, true);
+});
+
+test('package UI renders, filters, inspects evidence, and resets its dialog', () => {
+  const ui = loadUI();
+  const worker = ui.open('packages');
+  assert.equal(worker.sent[0].tool, 'packages');
+  assert.equal(ui.elements.get('package-count').textContent, '2 matching packages');
+  const input = ui.elements.get('package-type');
+  input.value = 'third-party';
+  input.events.get('change')();
+  assert.equal(ui.elements.get('package-count').textContent, '1 matching packages');
+  assert.match(ui.elements.get('package-list').innerHTML, /com\.example\.reader/);
+  assert.doesNotMatch(ui.elements.get('package-list').innerHTML, /com\.example\.system/);
+  ui.click({ package: '0' });
+  assert.equal(ui.elements.get('package-dialog').open, true);
+  assert.match(ui.elements.get('package-content').innerHTML, /\$\[0\]\.files\[0\]/);
+  assert.match(ui.elements.get('package-content').innerHTML, /Verification not established/);
+  ui.click({ cancel: 'packages' });
+  assert.equal(ui.elements.get('package-dialog').open, false);
+  assert.equal(worker.terminated, true);
+});
+
+test('package UI escapes untrusted names and file paths', () => {
+  const ui = loadUI();
+  const hostile = '<img src=x onerror=alert(1)>';
+  ui.packageSummary.packages[0].name = hostile;
+  ui.packageSummary.packages[0].files[0].path = hostile;
+  ui.open('packages');
+  assert.match(ui.elements.get('package-list').innerHTML, /&lt;img/);
+  assert.doesNotMatch(ui.elements.get('package-list').innerHTML, /<img/);
+  ui.click({ package: '0' });
+  assert.equal(ui.elements.get('package-title').textContent, hostile);
+  assert.doesNotMatch(ui.elements.get('package-content').innerHTML, /<img/);
+});
+
+test('package summaries can be remembered and reopened without a worker', () => {
+  const ui = loadUI();
+  ui.elements.get('packages-remember').checked = true;
+  const worker = ui.open('packages');
+  const stored = JSON.parse(ui.storage.get('android_tools_history_v2'));
+  assert.equal(stored[0].summary.tool, 'packages');
+  ui.elements.get('history-open').onclick();
+  assert.match(ui.elements.get('history-list').innerHTML, /Package Analyser/);
+  ui.click({ history: '0' });
+  assert.equal(worker.terminated, true);
+  assert.equal(ui.elements.get('package-count').textContent, '2 matching packages');
+  assert.match(ui.elements.get('packages-filemeta').textContent, /Saved summary/);
 });

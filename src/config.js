@@ -10,17 +10,26 @@ const AnalysisConfig = Object.freeze({
   CONTEXT_BEFORE: 12,
   CONTEXT_AFTER: 32,
   CONTEXT_LINE_CHARS: 16_000,
+  MAX_PACKAGE_BYTES: 20 * 1024 * 1024,
+  PACKAGE_LIMIT_LABEL: '20 MiB',
+  MAX_PACKAGES: 10_000,
+  MAX_PACKAGE_FILES: 100_000,
+  PACKAGE_PAGE_SIZE: 50,
 });
 
 // Metadata checks must run before reading bytes, on both sides of the worker.
-function validateCapture(file) {
+function validateCapture(file, tool = 'logcat') {
   if (!file || typeof file.name !== 'string' || !Number.isSafeInteger(file.size) || file.size < 0) {
     return 'Choose a valid file from your device.';
   }
-  if (file.size === 0) return 'This file is empty. Choose a bugreport or logcat capture.';
-  if (file.size > AnalysisConfig.MAX_FILE_BYTES) {
-    return `This file exceeds the ${AnalysisConfig.FILE_LIMIT_LABEL} limit. Choose a smaller capture.`;
+  if (file.size === 0) return 'This file is empty. Choose a capture with data.';
+  const packages = tool === 'packages';
+  const limit = packages ? AnalysisConfig.MAX_PACKAGE_BYTES : AnalysisConfig.MAX_FILE_BYTES;
+  const label = packages ? AnalysisConfig.PACKAGE_LIMIT_LABEL : AnalysisConfig.FILE_LIMIT_LABEL;
+  if (file.size > limit) {
+    return `This file exceeds the ${label} limit. Choose a smaller capture.`;
   }
+  if (packages) return /\.json$/i.test(file.name) ? null : 'Choose a packages.json inventory file.';
   if (!/\.(txt|log|zip)$/i.test(file.name)) return 'Choose a .txt, .log, or .zip file.';
   return null;
 }

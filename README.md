@@ -5,6 +5,11 @@ Your use of Web Workers, escaped log output, ZIP extraction limits, and source
 context is worth keeping. This refactor addresses concrete defects and separates
 the editable source from the generated offline files.
 
+Version 0.2 adds **Package Analyser** for Android `packages.json` inventories.
+It includes offline import, schema checks, evidence-based findings, filters,
+APK/certificate details, history, and JSON/Markdown reports. See
+[PACKAGE_ANALYSER.md](PACKAGE_ANALYSER.md) for integration and interpretation.
+
 ## Use the revised files
 
 The archive includes ready-built replacements:
@@ -47,6 +52,8 @@ behaviour or that the complete analysis has constant memory usage.
 | `src/logcat.js` | Log formats, signal detection, grouping, and summaries. |
 | `src/log-query.js` | Filtering and bounded pagination. |
 | `src/bugreport-analysis.js` | Bugreport crashes, battery statistics, package heuristics, and report assembly. |
+| `src/packages-analysis.js` | Package inventory validation, normalized evidence, counts, findings, and filtering. |
+| `src/packages-view.js` | Package explorer, metadata dialog, and Markdown report. |
 | `src/analysis-worker.js` | File reads, archive handling, request/reply protocol, and worker state. |
 | `src/app.js` | Navigation, rendering, dialogs, downloads, history, and UI state. |
 | `scripts/build.mjs` | Assemble the offline distribution. |
@@ -74,14 +81,18 @@ To include the stylesheet in the build:
 node scripts/build.mjs /path/to/your/styles.css
 ```
 
-**Verification performed:** all 22 automated tests passed on Node.js 24.19.0.
+**Verification performed:** all 38 automated tests passed on Node.js 24.19.0.
 They cover supported log formats, interleaved Java crashes, raw source positions,
 adjacent crash boundaries, stack continuations, pagination, file/read failures,
 ZIP selection and extraction limits, exports, context correlation, and UI reset.
 The UI tests use small DOM and Worker doubles; they are not browser tests.
+Package tests additionally cover schema failures, missing values, false certificate
+flags, split APK counts, duplicate records, filters, limits, escaping, and history.
+The supplied inventory was also processed through the generated worker: all 618
+package records and 1,006 APK entries were retained, and expected counts matched.
 
 `tests/browser-smoke.mjs` is an additional Playwright check for opening the built
-files, running both samples, filtering, stale replies, and file validation.
+files, running all three samples, filtering, stale replies, and file validation.
 It requires Playwright and Chromium. It was **not executed successfully** in
 this environment because no browser executable is installed. The original
 stylesheet was also unavailable, so visual and cross-browser checks remain

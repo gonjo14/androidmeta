@@ -27,9 +27,9 @@ async function extractEntry(entry) {
 }
 
 async function inspectFile(file, tool) {
-  const validationError = validateCapture(file);
+  const validationError = validateCapture(file, tool);
   if (validationError) throw new Error(validationError);
-  if (!['bugreport', 'logcat'].includes(tool)) throw new Error('Choose a supported analyser.');
+  if (!['bugreport', 'logcat', 'packages'].includes(tool)) throw new Error('Choose a supported analyser.');
   if (typeof file.text !== 'function' || typeof file.arrayBuffer !== 'function') throw new Error('Choose a readable file from your device.');
   activeFile = file; activeTool = tool; archive = null; logData = null; report = null;
   progress('Reading your file…', true);
@@ -67,6 +67,12 @@ async function chooseEntry(name) {
 
 async function runAnalysis(text, source) {
   if (!text.trim()) throw new Error('The selected file has no text to analyse.');
+  if (activeTool === 'packages') {
+    progress('Reading package inventory…', true);
+    report = PackageAnalysis.analyse(text, source, progress);
+    postMessage({ type: 'result', summary: report });
+    return;
+  }
   const sample = text.slice(0, 16000);
   if ((sample.match(/\0/g) || []).length > 5) throw new Error('This does not look like UTF-8 text. Export the capture as UTF-8 .txt and try again.');
   let lineCount = 1;

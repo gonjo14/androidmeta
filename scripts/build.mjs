@@ -14,6 +14,7 @@ const workerFiles = [
   'src/logcat.js',
   'src/log-query.js',
   'src/bugreport-analysis.js',
+  'src/packages-analysis.js',
   'src/analysis-worker.js',
 ];
 const workerSources = await Promise.all(workerFiles.map(read));
@@ -25,7 +26,7 @@ const marker = '/* ANALYSIS_WORKER_BUNDLE */';
 if (template.split(marker).length !== 2) throw new Error('Expected one worker marker in the HTML template.');
 // A replacement callback preserves literal $ patterns in parser regexes.
 const html = template.replace(marker, () => worker);
-const app = `'use strict';\n${await read('src/config.js')}\n${await read('src/app.js')}`;
+const app = `'use strict';\n${await read('src/config.js')}\n${await read('src/packages-analysis.js')}\n${await read('src/packages-view.js')}\n${await read('src/app.js')}`;
 await writeFile(join(output, 'index.html'), html);
 await writeFile(join(output, 'bugreport.js'), app);
 
