@@ -468,18 +468,7 @@ function splitSections(text) {
     return out;
   }
 
-  // ---------------------------------------------------------------------
   // Native crash / tombstone analysis
-  //
-  // This mirrors the "4.2 tombstones" signifiers from the WARD-style triage
-  // doc: memory-corruption signal class, exploitation-prone fault codes,
-  // NULL/low/kernel-space fault addresses, short/corrupted backtraces,
-  // ROP-like small function offsets, abort/sanitizer messages, odd library
-  // paths (especially /data/local/tmp/), and timestamp cross-referencing
-  // against logcat/usagestats. One crash proves a bug, not an attack — the
-  // classifier below scores/flags signifiers so several clustering on one
-  // tombstone stand out; it never itself concludes "malicious".
-  // ---------------------------------------------------------------------
 
   function parseTombstoneTimestamp(ts) {
     const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(ts || "");
@@ -500,17 +489,12 @@ function splitSections(text) {
   }
 
   function toDaySeconds(t) {
-    // Rough day-of-year proxy (month*31 + day). Good enough for finding
-    // events minutes/hours apart within one bugreport capture window; not a
-    // calendar-accurate day count, and not meant to span a year boundary.
     return Date.UTC(2000, t.month - 1, t.day, t.hour, t.min, t.sec) / 1000;
   }
 
   function isKernelAddress(hex) {
     if (!hex) return false;
     const clean = hex.replace(/^0x/i, "").replace(/^0+/, "");
-    // Canonical kernel addresses (arm64/x86_64) sign-extend the top bits, so
-    // they render as a long run of leading f's.
     return /^f{4,}/i.test(clean);
   }
 
@@ -833,13 +817,6 @@ function classifyNativeCrash(crash) {
 
   function extractPackageFromWakelock(name) {
     if (!name) return null;
-
-    // Standard Android naming: '*job*/AUTHORITY/ACCOUNT_TYPE/ACCOUNT_NAME[:x]'
-    // (SyncAdapter-triggered jobs) or '*job*/PACKAGE/Component' (WorkManager/
-    // JobScheduler jobs), also seen with '*sync*/' and other '*x*/' prefixes.
-    // For 3+ path segments the OWNING app is the 2nd segment (account type),
-    // not the 1st (which is often just the content-provider authority, e.g.
-    // 'com.android.contacts' regardless of which app is actually syncing).
     const prefixM = name.match(/^\*[^*]+\*\/(.+)$/);
     if (prefixM) {
       const parts = prefixM[1].split("/").filter(Boolean);
@@ -1100,11 +1077,6 @@ function classifyNativeCrash(crash) {
       if (w.times > 1000) {
         score += 5;
       }
-
-      // Prefer the normalized signal (share of on-battery time) when we have
-      // a total to compare against; it scales correctly regardless of how
-      // long the capture window was. Fall back to the raw-duration heuristic
-      // only when no total is available.
       if (pct !== null) {
         if (pct >= 3) score += 15;
         else if (pct >= 1) score += 7;
@@ -1187,9 +1159,6 @@ function classifyNativeCrash(crash) {
   // Stalkerware / surveillance-app correlation
   // ---------------------------------------------------------------------
 
-  // Generic "find every DUMP OF SERVICE <name>: ... until the next one"
-  // extractor, matching the pattern findWakelocks already uses for
-  // batterystats. markerRe should NOT be global; this adds the flag itself.
   function sectionContentByMarker(fullText, markerRe) {
     const out = [];
     const re = new RegExp(markerRe.source, markerRe.flags.includes("g") ? markerRe.flags : markerRe.flags + "g");
@@ -1202,11 +1171,6 @@ function classifyNativeCrash(crash) {
     }
     return out;
   }
-
-  // Line-based parse of "dumpsys package": per-package requested vs. granted
-  // runtime permissions, install path, and whether the SYSTEM flag is set.
-  // Best-effort — dumpsys package output nests differently across Android
-  // versions, so this tracks section keywords rather than exact indentation.
   function findPackageInfo(fullText) {
     const packages = new Map();
     for (const content of sectionContentByMarker(fullText, /DUMP OF SERVICE package:/)) {
@@ -1249,9 +1213,7 @@ function classifyNativeCrash(crash) {
     return packages;
   }
 
-  // Packages with an enabled Accessibility Service — the single most common
-  // technique consumer stalkerware uses to read on-screen content (messages,
-  // browsing, credentials) without needing per-app integrations.
+  // Packages with an enabled Accessibility Service 
   function findAccessibilityServicePackages(fullText) {
     const pkgs = new Set();
     for (const content of sectionContentByMarker(fullText, /DUMP OF SERVICE accessibility:/)) {
@@ -1259,8 +1221,6 @@ function classifyNativeCrash(crash) {
       let m;
       while ((m = COMPONENT_INFO_RE.exec(content)) !== null) pkgs.add(m[1]);
     }
-    // Fallback: Settings-secure dump of the same setting, e.g.
-    // "enabled_accessibility_services=pkg/.Svc:pkg2/.Svc2".
     const settingM = ENABLED_A11Y_SETTING_RE.exec(fullText);
     if (settingM) {
       for (const entry of settingM[1].split(":")) {
@@ -1271,9 +1231,6 @@ function classifyNativeCrash(crash) {
     return pkgs;
   }
 
-  // Packages registered as Device Administrators — can block uninstall,
-  // force a device wipe, or lock the screen; a stronger-than-average grip
-  // on the device for an app that isn't an MDM/"Find My Device" solution.
   function findDeviceAdminPackages(fullText) {
     const pkgs = new Set();
     for (const content of sectionContentByMarker(fullText, /DUMP OF SERVICE device_policy:/)) {
@@ -1284,9 +1241,7 @@ function classifyNativeCrash(crash) {
     return pkgs;
   }
 
-  // Packages exempted from battery optimization/Doze — lets a monitoring
-  // app keep running and reporting in the background. Weak alone; plenty of
-  // legitimate apps request this too.
+  // Packages exempted from battery optimization/Doze
   function findBatteryOptimizationExemptPackages(fullText) {
     const pkgs = new Set();
     for (const content of sectionContentByMarker(fullText, /DUMP OF SERVICE deviceidle:/)) {
@@ -1590,7 +1545,6 @@ function classifyNativeCrash(crash) {
 
       crash_diagnosis: cleanCrashDiagnosis,
 
-      // NEW
       stalkerware_indicators: stalkerwareIndicators,
 
       low_memory_events: lowMem.slice(0, 20),
@@ -1744,9 +1698,6 @@ self.onmessage = async ({ data }) => {
   try {
     switch (data.type) {
       case 'open': {
-        // The main thread now sends the raw bytes (transferred, zero-copy) instead of a
-        // File object, since a File cloned into a worker can throw a spurious I/O error
-        // when later read here. Wrap the buffer so it still looks like a File to inspectFile.
         const buffer = data.buffer;
         const fileLike = {
           name: data.name,
