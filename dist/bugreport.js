@@ -1,3 +1,31 @@
+'use strict';
+// Shared by the UI and worker. The build includes this file in both contexts.
+const AnalysisConfig = Object.freeze({
+  MAX_FILE_BYTES: 150 * 1024 * 1024,
+  FILE_LIMIT_LABEL: '150 MiB',
+  MAX_LINES: 10_000_000,
+  MAX_ARCHIVE_ENTRIES: 1_000,
+  PAGE_SIZE: 100,
+  QUERY_DEBOUNCE_MS: 180,
+  ROW_PREVIEW_CHARS: 450,
+  CONTEXT_BEFORE: 12,
+  CONTEXT_AFTER: 32,
+  CONTEXT_LINE_CHARS: 16_000,
+});
+
+// Metadata checks must run before reading bytes, on both sides of the worker.
+function validateCapture(file) {
+  if (!file || typeof file.name !== 'string' || !Number.isSafeInteger(file.size) || file.size < 0) {
+    return 'Choose a valid file from your device.';
+  }
+  if (file.size === 0) return 'This file is empty. Choose a bugreport or logcat capture.';
+  if (file.size > AnalysisConfig.MAX_FILE_BYTES) {
+    return `This file exceeds the ${AnalysisConfig.FILE_LIMIT_LABEL} limit. Choose a smaller capture.`;
+  }
+  if (!/\.(txt|log|zip)$/i.test(file.name)) return 'Choose a .txt, .log, or .zip file.';
+  return null;
+}
+
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -5,13 +33,14 @@
   const number = value => Number(value || 0).toLocaleString();
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const bytes = n => n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1048576).toFixed(1)} MiB`;
-  const state = {
-    bugreport: { worker: null, summary: null, tab: 'overview', busy: false },
-    logcat: { worker: null, summary: null, tab: 'overview', busy: false, page: 0, queryId: 0, filters: {} }
-  };
+  function createToolState() {
+    return { worker: null, summary: null, tab: 'overview', busy: false, fileSize: 0, page: 0, queryId: 0, filters: {} };
+  }
+  const state = { bugreport: createToolState(), logcat: createToolState() };
   const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser' };
   const historyKey = 'android_tools_history_v2';
   let route = 'home', toastTimer = null, queryTimer = null, contextTool = null, contextTarget = 1;
+  let contextRequestId = 0;
 
   function toast(message) {
     clearTimeout(toastTimer); $('toast').textContent = message; $('toast').hidden = false;
@@ -37,7 +66,7 @@
       <div class="page-heading"><div><div class="eyebrow">${log ? 'LOGCAT INVESTIGATION' : 'DEVICE DIAGNOSTICS'}</div><h1>${titles[tool]}</h1><p class="subtitle">${log ? 'Find the important events in logcat.txt, then inspect the lines around them.' : 'Review crashes, responsiveness, battery statistics, and app access in one capture.'}</p></div><button class="button" data-demo="${tool}">Try a sample</button></div>
       <div id="${tool}-upload" class="upload-panel" data-drop="${tool}">
         <div class="upload-icon">${icon('upload')}</div><h2>Drop your ${log ? 'logcat file' : 'bugreport'} here</h2><p>${log ? 'Open a saved logcat capture or choose a log file inside a ZIP.' : 'Open a bugreport ZIP or the extracted text report.'}</p>
-        <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose file</button></div><p class="upload-hint">TXT, LOG, ZIP · UP TO 150 MiB / 10 MILLION LINES · PROCESSED LOCALLY</p>
+        <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose file</button></div><p class="upload-hint">TXT, LOG, ZIP · UP TO ${AnalysisConfig.FILE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_LINES)} LINES · PROCESSED LOCALLY</p>
         <input id="${tool}-file" type="file" accept=".txt,.log,.zip" hidden aria-label="Choose ${log ? 'logcat' : 'bugreport'} file">
       </div>
       <label class="remember"><input id="${tool}-remember" type="checkbox">Remember analysis summaries in this browser</label>
@@ -69,13 +98,20 @@
   }
   function reset(tool) {
     state[tool].worker?.terminate();
-    Object.assign(state[tool], { worker: null, summary: null, busy: false, tab: 'overview', page: 0, filters: {}, queryId: 0 });
+    if (tool === 'logcat') { clearTimeout(queryTimer); queryTimer = null; }
+    Object.assign(state[tool], createToolState(), { queryId: state[tool].queryId + 1 });
     for (const id of ['loading', 'error', 'archive', 'filebar', 'results']) $(`${tool}-${id}`).hidden = true;
     $(`${tool}-results`).replaceChildren(); $(`${tool}-upload`).hidden = false; $(`${tool}-help`).hidden = false;
     $(tool).setAttribute('aria-busy', 'false');
-    if (contextTool === tool && $('context-dialog').open) $('context-dialog').close();
+    if (contextTool === tool) {
+      contextRequestId++;
+      contextTool = null;
+      if ($('context-dialog').open) $('context-dialog').close();
+    }
   }
   function openFile(tool, file) {
+    const validationError = validateCapture(file);
+    if (validationError) { showError(tool, validationError); return; }
     reset(tool);
     state[tool].fileSize = file.size;
     setBusy(tool, true); $(`${tool}-upload`).hidden = true; $(`${tool}-help`).hidden = true;
@@ -89,18 +125,25 @@
     state[tool].worker = worker;
     worker.onmessage = ({ data }) => { if (state[tool].worker === worker) handleMessage(tool, data); };
     worker.onerror = event => { event.preventDefault(); if (state[tool].worker === worker) failOpen(tool, 'The local analysis stopped unexpectedly. Try a smaller capture or reopen this HTML in a desktop browser.'); };
-    file.arrayBuffer().then(buffer => {
-      if (state[tool].worker !== worker) return;
-      worker.postMessage({ type: 'open', name: file.name, size: file.size, buffer, tool }, [buffer]);
-    }).catch(() => {
-      if (state[tool].worker === worker) failOpen(tool, 'This file could not be read from disk. If it lives on a cloud-synced or network drive, make it available offline and try again.');
-    });
+    worker.onmessageerror = () => {
+      if (state[tool].worker === worker) failOpen(tool, 'The browser could not receive the analysis result. Reopen the capture to try again.');
+    };
+    try {
+      // File is structured-cloneable. Read and decode it inside the worker.
+      worker.postMessage({ type: 'open', file, tool });
+    } catch (_) {
+      failOpen(tool, 'The browser could not pass this file to the local analyser. Reopen the capture to try again.');
+    }
   }
   function failOpen(tool, message) {
     state[tool].worker?.terminate(); state[tool].worker = null;
     setBusy(tool, false); $(`${tool}-archive`).hidden = true; $(`${tool}-upload`).hidden = false; showError(tool, message);
   }
   function handleMessage(tool, data) {
+    if (!data || typeof data.type !== 'string') return;
+    const operation = data.type === 'error' ? data.operation : data.type;
+    if (operation === 'query' && (tool !== 'logcat' || data.requestId !== state.logcat.queryId)) return;
+    if (operation === 'context' && (contextTool !== tool || data.requestId !== contextRequestId || !$('context-dialog').open)) return;
     if (data.type === 'progress') $(`${tool}-progress`).textContent = data.message;
     if (data.type === 'archive') {
       setBusy(tool, false); $(`${tool}-archive`).hidden = false;
@@ -116,8 +159,8 @@
       if ($(`${tool}-remember`).checked) remember(data.summary);
       toast(`${titles[tool]} finished.`);
     }
-    if (data.type === 'query' && data.requestId === state.logcat.queryId) renderLogRows(data);
-    if (data.type === 'context' && contextTool === tool) renderContext(data);
+    if (data.type === 'query') renderLogRows(data);
+    if (data.type === 'context') renderContext(data);
     if (data.type === 'export') {
       download(data.blob, 'filtered-logcat.txt');
       const button = $('export-filtered'); if (button) button.disabled = false;
@@ -211,11 +254,22 @@
     $('export-filtered').onclick = () => { $('export-filtered').disabled = true; state.logcat.worker.postMessage({ type: 'export', filters: state.logcat.filters }); };
     requestQuery();
   }
-  function scheduleQuery() { clearTimeout(queryTimer); state.logcat.queryId++; queryTimer = setTimeout(requestQuery, 180); }
+  function markQueryPending() {
+    if (!$('log-count')) return;
+    $('log-count').textContent = 'Filtering…';
+    $('log-prev').disabled = true;
+    $('log-next').disabled = true;
+  }
+  function scheduleQuery() {
+    clearTimeout(queryTimer);
+    state.logcat.queryId++;
+    markQueryPending();
+    queryTimer = setTimeout(requestQuery, AnalysisConfig.QUERY_DEBOUNCE_MS);
+  }
   function requestQuery() {
     clearTimeout(queryTimer);
     if (!state.logcat.worker || !$('log-count')) return;
-    $('log-count').textContent = 'Filtering…';
+    markQueryPending();
     state.logcat.worker.postMessage({ type: 'query', filters: state.logcat.filters, page: state.logcat.page, requestId: ++state.logcat.queryId });
   }
   function renderLogRows(data) {
@@ -271,7 +325,7 @@
     $('context-content').innerHTML = '<div class="context-loading">Loading source lines…</div>';
     $('context-before').disabled = true; $('context-after').disabled = true;
     if (!$('context-dialog').open) $('context-dialog').showModal();
-    state[tool].worker.postMessage({ type: 'context', line });
+    state[tool].worker.postMessage({ type: 'context', line, requestId: ++contextRequestId });
   }
   function renderContext(data) {
     contextTarget = data.target;
@@ -395,6 +449,11 @@
   $('history-clear').onclick = () => { try { localStorage.removeItem(historyKey); localStorage.removeItem('bugreport_analyzer_history_v1'); showHistory(); toast('Saved summaries cleared.'); } catch (_) { toast('This browser blocked changes to saved history.'); } };
   $('context-before').onclick = () => openContext(contextTool, Math.max(1, contextTarget - 40));
   $('context-after').onclick = () => openContext(contextTool, contextTarget + 40);
+  $('context-dialog').addEventListener('close', () => {
+    if ($('context-dialog').open) return;
+    contextTool = null;
+    contextRequestId++;
+  });
   window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
   window.addEventListener('beforeunload', () => { state.bugreport.worker?.terminate(); state.logcat.worker?.terminate(); });
   document.addEventListener('dragover', event => event.preventDefault());
