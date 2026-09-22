@@ -50,13 +50,13 @@ function validateCapture(file, tool = 'logcat') {
 
 ;
 // Curated public-source evidence, not a reputation or APK-signature database.
-// Add exact package IDs only, with a dated source and an explicit rationale.
+// Exact-ID evidence and namespace hints are separate; hints never assign country.
 const PackageOrigins = (() => {
   'use strict';
-  const VERSION = '2026-09-22.1';
+  const VERSION = '2026-09-22.2';
   const CHECKED_AT = '2026-09-22';
   const SCOPE = 'China-linked means a listed publisher based in mainland China, or a documented parent group with substantial operations there. Publisher location and group links are shown separately.';
-  const LIMITATION = 'This is a limited, dated catalogue matched by exact package ID. It does not authenticate the installed APK, establish data destinations, or assess app safety. Unclassified does not mean non-Chinese.';
+  const LIMITATION = 'Exact-ID catalogue matches record publisher evidence. Namespace hints suggest a publisher or platform but leave country unverified. Neither authenticates the installed APK or assesses app safety. Unclassified does not mean non-Chinese; a publisher listed elsewhere does not exclude other China connections.';
   const play = id => ({ title: 'Google Play publisher listing', url: `https://play.google.com/store/apps/details?id=${id}&hl=en` });
   const oneplus = (id, appName) => [id, {
     status: 'china-linked', basis: 'china-publisher', app_name: appName,
@@ -68,7 +68,19 @@ const PackageOrigins = (() => {
     status: 'needs-review', basis: 'unresolved', app_name: appName,
     publisher, publisher_country: 'SG', group: null, reason, sources: [play(id)],
   }];
+  const listedPublisher = (id, appName, publisher, country) => [id, {
+    status: 'publisher-recorded', basis: 'listed-publisher', app_name: appName,
+    publisher, publisher_country: country, group: null,
+    reason: 'The current listing for this exact package ID identifies this publisher and country. Parent-company connections and the installed APK signer have not been established by this rule.',
+    sources: [play(id)],
+  }];
   const entries = [
+    listedPublisher('com.sec.android.app.sbrowser', 'Samsung Browser', 'Samsung Electronics Co., Ltd.', 'KR'),
+    listedPublisher('com.samsung.android.app.notes', 'Samsung Notes', 'Samsung Electronics Co., Ltd.', 'KR'),
+    listedPublisher('com.google.android.gm', 'Gmail', 'Google LLC', 'US'),
+    listedPublisher('com.android.chrome', 'Google Chrome', 'Google LLC', 'US'),
+    listedPublisher('com.microsoft.office.outlook', 'Microsoft Outlook', 'Microsoft Corporation', 'US'),
+    listedPublisher('com.facebook.katana', 'Facebook', 'Meta Platforms, Inc.', 'US'),
     oneplus('com.oneplus.note', 'OnePlus Notes'),
     oneplus('com.oneplus.backuprestore', 'Clone Phone - OnePlus app'),
     oneplus('net.oneplus.forums', 'OnePlus Community'),
@@ -102,18 +114,47 @@ const PackageOrigins = (() => {
     if (!entry.sources.length || entry.sources.some(source => !/^https:\/\//.test(source.url))) throw new Error(`Missing HTTPS evidence for ${id}.`);
   }
 
-  function lookup(name) {
+  // The source demonstrates the namespace on an official app; it does NOT
+  // verify every ID sharing it. These rules create hints, never country labels.
+  const namespaceHints = [
+    { prefix: 'com.samsung.', name: 'Samsung', source: play('com.samsung.android.app.notes') },
+    { prefix: 'com.sec.', name: 'Samsung', source: play('com.sec.android.app.sbrowser') },
+    { prefix: 'com.google.', name: 'Google', source: play('com.google.android.gm') },
+    { prefix: 'com.microsoft.', name: 'Microsoft', source: play('com.microsoft.office.outlook') },
+    { prefix: 'com.facebook.', name: 'Meta / Facebook', source: play('com.facebook.katana') },
+  ];
+  const platformSource = { title: 'AOSP system-package documentation (platform context only)', url: 'https://source.android.com/docs/core/permissions/preinstalled-packages' };
+
+  function lookup(name, pkg = {}) {
     const entry = catalogue.get(name);
-    return entry ? { ...entry, matched_package: name, checked_at: CHECKED_AT, catalogue_version: VERSION, sources: entry.sources.map(source => ({ ...source })) } : {
+    if (entry) return { ...entry, match_method: 'exact-package-id', publisher_hint: null, matched_namespace: null, matched_package: name, checked_at: CHECKED_AT, catalogue_version: VERSION, sources: entry.sources.map(source => ({ ...source })) };
+    const hint = typeof name === 'string' ? namespaceHints.find(rule => name.startsWith(rule.prefix) && name.length > rule.prefix.length) : null;
+    const platform = pkg.system === true && pkg.third_party !== true && typeof name === 'string' && (name === 'android' || name.startsWith('com.android.') || name.startsWith('android.'));
+    if (hint || platform) {
+      const prefix = hint?.prefix || (name === 'android' ? 'android' : name.startsWith('com.android.') ? 'com.android.' : 'android.');
+      const source = hint ? { ...hint.source, title: 'Official example of this namespace (not this package)' } : platformSource;
+      return {
+        status: 'publisher-hint', basis: hint ? 'publisher-namespace' : 'platform-namespace',
+        app_name: null, publisher: null, publisher_country: null, group: null,
+        publisher_hint: hint?.name || 'Android platform / device vendor',
+        matched_package: null, matched_namespace: prefix, match_method: 'namespace-hint',
+        reason: hint
+          ? `The ${prefix} namespace suggests ${hint.name}. This is an inference from the name, not verified publisher ownership. It does not establish the package country or rule out a China connection.`
+          : 'The collector reports a system package using an Android platform namespace. Device manufacturers can modify and sign platform packages; their publisher and country remain unestablished.',
+        checked_at: CHECKED_AT, catalogue_version: VERSION, sources: [{ ...source }],
+      };
+    }
+    return {
       status: 'unclassified', basis: 'not-in-catalogue', app_name: null,
       publisher: null, publisher_country: null, group: null, matched_package: null,
+      match_method: 'none', publisher_hint: null, matched_namespace: null,
       reason: 'No reviewed exact-ID rule is available. Country and ownership remain unestablished.',
       checked_at: null, catalogue_version: VERSION, sources: [],
     };
   }
 
   function metadata() {
-    return { version: VERSION, checked_at: CHECKED_AT, scope: SCOPE, limitation: LIMITATION, match_method: 'exact-package-id', rule_count: catalogue.size };
+    return { version: VERSION, checked_at: CHECKED_AT, scope: SCOPE, limitation: LIMITATION, match_method: 'exact-package-id-with-separate-namespace-hints', rule_count: catalogue.size, namespace_hint_rules: namespaceHints.length, platform_hints_require_system_flag: true };
   }
   return Object.freeze({ lookup, metadata });
 })();
@@ -282,22 +323,24 @@ const PackageAnalysis = (() => {
   // Refresh saved v1/v2 reports against the shipped catalogue without changing
   // their capture date or mutating the original evidence.
   function withOrigins(summary) {
-    const packages = summary.packages.map(pkg => ({ ...pkg, origin: PackageOrigins.lookup(pkg.name) }));
-    const counts = { ...summary.counts, china_linked: 0, china_publisher: 0, origin_needs_review: 0, origin_unclassified: 0 };
+    const packages = summary.packages.map(pkg => ({ ...pkg, origin: PackageOrigins.lookup(pkg.name, pkg) }));
+    const counts = { ...summary.counts, china_linked: 0, china_publisher: 0, origin_needs_review: 0, origin_publisher_recorded: 0, origin_publisher_hint: 0, origin_unclassified: 0 };
     for (const pkg of packages) {
       if (pkg.origin.status === 'china-linked') counts.china_linked++;
       if (pkg.origin.basis === 'china-publisher') counts.china_publisher++;
       if (pkg.origin.status === 'needs-review') counts.origin_needs_review++;
+      if (pkg.origin.status === 'publisher-recorded') counts.origin_publisher_recorded++;
+      if (pkg.origin.status === 'publisher-hint') counts.origin_publisher_hint++;
       if (pkg.origin.status === 'unclassified') counts.origin_unclassified++;
     }
     return { ...summary, version: VERSION, packages, counts, origin_catalogue: PackageOrigins.metadata() };
   }
 
   function matches(pkg, filters = {}) {
-    const origin = pkg.origin || PackageOrigins.lookup(pkg.name);
+    const origin = pkg.origin || PackageOrigins.lookup(pkg.name, pkg);
     if (filters.origin === 'china-publisher' && origin.basis !== 'china-publisher') return false;
     if (filters.origin === 'exclude-china-linked' && origin.status === 'china-linked') return false;
-    if (['china-linked', 'needs-review', 'unclassified'].includes(filters.origin) && origin.status !== filters.origin) return false;
+    if (['china-linked', 'needs-review', 'publisher-recorded', 'publisher-hint', 'unclassified'].includes(filters.origin) && origin.status !== filters.origin) return false;
     if (filters.type && pkg.classification !== filters.type) return false;
     if (filters.disabled === 'true' && pkg.disabled !== true) return false;
     if (filters.disabled === 'false' && pkg.disabled !== false) return false;
@@ -310,7 +353,7 @@ const PackageAnalysis = (() => {
     if (filters.review === 'certificate-unknown' && !pkg.files.some(file => file.certificate_status === 'unknown')) return false;
     const query = (filters.query || '').trim().toLowerCase();
     if (!query) return true;
-    if (`${pkg.name} ${pkg.uid ?? ''} ${pkg.installer ?? ''} ${origin.app_name ?? ''} ${origin.publisher ?? ''} ${origin.group ?? ''}`.toLowerCase().includes(query)) return true;
+    if (`${pkg.name} ${pkg.uid ?? ''} ${pkg.installer ?? ''} ${origin.app_name ?? ''} ${origin.publisher ?? ''} ${origin.publisher_hint ?? ''} ${origin.group ?? ''}`.toLowerCase().includes(query)) return true;
     return pkg.files.some(file => `${file.path ?? ''} ${file.sha256 ?? ''} ${file.certificate?.Sha256 ?? ''}`.toLowerCase().includes(query));
   }
 
