@@ -1,72 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
-<meta name="description" content="Offline Android bugreport, logcat, and package inventory analysis. Inspect crashes, battery statistics, and APK metadata in your browser.">
-<title>Android Tools</title>
-<link rel="stylesheet" href="styles.css">
-</head>
-<body>
-<svg class="svg-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
-<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
-<symbol id="i-bug" viewBox="0 0 24 24"><path d="M8 8V6a4 4 0 0 1 8 0v2M12 8v12M3 10h4m10 0h4M3 16h4m10 0h4M5 4l3 3m11-3-3 3"/><rect x="7" y="8" width="10" height="13" rx="5"/></symbol>
-<symbol id="i-log" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m7 8 3 3-3 3m6 1h4M4 18h16"/></symbol>
-<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8m-8 4h5"/></symbol>
-<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
-<symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6zM8 12l3 3 5-6"/></symbol>
-<symbol id="i-battery" viewBox="0 0 24 24"><rect x="2" y="7" width="17" height="10" rx="2"/><path d="M22 10v4M6 10v4m4-4v4m4-4v4"/></symbol>
-<symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="3"/><circle cx="16" cy="17" r="3"/></symbol>
-<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
-<symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/></symbol>
-</defs>
-</svg>
-<a class="skip-link" href="#main">Skip to content</a>
-<div class="app-shell">
-  <aside class="sidebar">
-    <a class="brand" href="#home" aria-label="Android Tools home"><span class="brand-mark"><svg class="icon"><use href="#i-log"/></svg></span><span>Android Tools<small>DIAGNOSTICS WORKSPACE</small></span></a>
-    <div class="nav-label">WORKSPACE</div>
-    <nav aria-label="Main menu">
-      <button class="nav-item active" data-route="home" aria-current="page"><svg class="icon"><use href="#i-grid"/></svg>Overview</button>
-      <button class="nav-item" data-route="bugreport"><svg class="icon"><use href="#i-bug"/></svg>Bug Report Analyser</button>
-      <button class="nav-item" data-route="logcat"><svg class="icon"><use href="#i-log"/></svg>Log Analyser<span class="nav-dot"></span></button>
-      <button class="nav-item" data-route="packages"><svg class="icon"><use href="#i-grid"/></svg>Package Analyser</button>
-    </nav>
-    <div class="sidebar-bottom"><svg class="icon"><use href="#i-shield"/></svg><div><strong>On your device</strong><p>Files are analysed in your browser. No upload required.</p></div></div>
-    <div class="version">ANDROID TOOLS <span>v01</span></div>
-  </aside>
-  <main id="main" tabindex="-1">
-    <header class="topbar"><span id="breadcrumb">Workspace / Overview</span><div class="topbar-actions"><span class="local-status"><span></span> Local analysis</span><button class="button small" id="history-open">History</button></div></header>
-    <section id="home" class="page">
-      <div class="home-intro"><div><div class="eyebrow">ANDROID DIAGNOSTICS</div><h1>Less noise.<br><span>More answers.</span></h1><p>Turn Android captures into a clear starting point.<br class="desktop-only"> Find failures, inspect the evidence, and get back to building.</p></div><div class="signal-art" aria-hidden="true"><div class="art-top"><span class="dot"></span><span>CAPTURE → CLARITY</span></div><div class="art-lines"><i></i><i></i><i></i><i></i></div><div class="art-signal"><svg viewBox="0 0 240 70"><path d="M0 44h47l14-17 16 29 20-45 18 37 17-11h26l12-17 15 24h55"/></svg></div><div class="art-bottom"><span>01 / COLLECT</span><span>02 / UNDERSTAND</span></div></div></div>
-      <div class="section-heading"><h2>Your toolkit</h2><span>Choose a capture to investigate</span></div>
-      <div class="menu-grid">
-        <button class="tool-card" data-route="bugreport"><span class="tool-icon"><svg class="icon"><use href="#i-bug"/></svg></span>
-          <span class="tool-name">Bug Report Analyser <svg class="icon"><use href="#i-arrow"/></svg></span><span class="tool-description">A full-device view of crashes, ANRs, wakelocks, memory pressure, and app access.</span><span class="tool-footer">.ZIP · .TXT · .LOG <span>Open analyser</span></span></button>
-        <button class="tool-card log-card" data-route="logcat"><span class="tool-icon"><svg class="icon"><use href="#i-log"/></svg></span>
-          <span class="tool-name">Log Analyser <svg class="icon"><use href="#i-arrow"/></svg></span><span class="tool-description">Make sense of logcat.txt. Group recurring errors and trace each finding to its source.</span><span class="tool-footer">.TXT · .LOG · .ZIP <span>Open analyser</span></span></button>
-        <button class="tool-card" data-route="packages"><span class="tool-icon"><svg class="icon"><use href="#i-grid"/></svg></span><span class="tool-name">Package Analyser <svg class="icon"><use href="#i-arrow"/></svg></span><span class="tool-description">Search package inventories, inspect APK hashes and installers, and review certificate coverage.</span><span class="tool-footer">.JSON <span>Open analyser</span></span></button>
-        <div class="tool-card unavailable"><span class="tool-icon"><svg class="icon"><use href="#i-battery"/></svg></span>
-          <span class="tool-name">Battery Analyser <span class="badge neutral">Coming soon</span></span><span class="tool-description">Battery and wakelock checks are currently available inside Bug Report Analyser.</span></div>
-        <div class="tool-card unavailable"><span class="tool-icon"><svg class="icon"><use href="#i-settings"/></svg></span>
-          <span class="tool-name">Settings <span class="badge neutral">Coming soon</span></span><span class="tool-description">Use the controls in each analyser to filter results and manage saved summaries.</span></div>
-      </div>
-      <div class="home-note"><svg class="icon"><use href="#i-shield"/></svg><span><strong>Private by default.</strong> Works offline in your browser. Your capture stays in your browser.</span><span class="mono">NO ACCOUNT NEEDED</span></div>
-    </section>
-    <section id="bugreport" class="page" hidden></section>
-    <section id="logcat" class="page" hidden></section>
-    <section id="packages" class="page" hidden></section>
-    <footer class="app-footer"><span>Android Tools · Local diagnostics</span><span>Evidence first. Context always.</span></footer>
-  </main>
-</div>
-<dialog id="context-dialog" aria-labelledby="context-title"><div class="dialog-head"><div><div class="eyebrow">SOURCE CONTEXT</div><h2 id="context-title">Log context</h2></div><button class="button" data-close="context-dialog">Close</button></div><p id="context-meta" class="muted"></p><div id="context-content" class="source-lines"></div><div class="dialog-foot"><button class="button" id="context-before">Earlier lines</button><button class="button" id="context-after">Later lines</button></div></dialog>
-<dialog id="history-dialog" aria-labelledby="history-title"><div class="dialog-head"><div><div class="eyebrow">THIS BROWSER</div><h2 id="history-title">Saved analyses</h2></div><button class="button" data-close="history-dialog">Close</button></div><p class="muted">Only summaries you choose to remember are saved. They may include log excerpts. Reopen the source file to explore its raw lines.</p><div id="history-list"></div><div class="dialog-foot"><button class="button danger" id="history-clear">Clear saved history</button></div></dialog>
-<dialog id="package-dialog" aria-labelledby="package-title"><div class="dialog-head"><div><div class="eyebrow">PACKAGE EVIDENCE</div><h2 id="package-title">Package details</h2></div><button class="button" data-close="package-dialog">Close</button></div><p id="package-meta" class="muted"></p><div id="package-content"></div></dialog>
-<div id="toast" role="status" hidden></div>
-<noscript>
-  <div class="noscript">Enable JavaScript to analyse files locally.</div></noscript>
-<script id="analysis-worker" type="text/plain">
 /*!
 
 JSZip v3.10.1 - A JavaScript class for generating and reading zip files
@@ -116,6 +47,301 @@ function validateCapture(file, tool = 'logcat') {
   if (!/\.(txt|log|zip)$/i.test(file.name)) return 'Choose a .txt, .log, or .zip file.';
   return null;
 }
+
+;
+// Curated public-source evidence, not a reputation or APK-signature database.
+// Add exact package IDs only, with a dated source and an explicit rationale.
+const PackageOrigins = (() => {
+  'use strict';
+  const VERSION = '2026-09-22.1';
+  const CHECKED_AT = '2026-09-22';
+  const SCOPE = 'China-linked means a listed publisher based in mainland China, or a documented parent group with substantial operations there. Publisher location and group links are shown separately.';
+  const LIMITATION = 'This is a limited, dated catalogue matched by exact package ID. It does not authenticate the installed APK, establish data destinations, or assess app safety. Unclassified does not mean non-Chinese.';
+  const play = id => ({ title: 'Google Play publisher listing', url: `https://play.google.com/store/apps/details?id=${id}&hl=en` });
+  const oneplus = (id, appName) => [id, {
+    status: 'china-linked', basis: 'china-publisher', app_name: appName,
+    publisher: 'OnePlus Ltd. / 深圳市万普拉斯科技有限公司', publisher_country: 'CN', group: null,
+    reason: 'The exact package listing identifies this publisher with a registered address in Shenzhen, China.',
+    sources: [play(id)],
+  }];
+  const review = (id, appName, publisher, reason) => [id, {
+    status: 'needs-review', basis: 'unresolved', app_name: appName,
+    publisher, publisher_country: 'SG', group: null, reason, sources: [play(id)],
+  }];
+  const entries = [
+    oneplus('com.oneplus.note', 'OnePlus Notes'),
+    oneplus('com.oneplus.backuprestore', 'Clone Phone - OnePlus app'),
+    oneplus('net.oneplus.forums', 'OnePlus Community'),
+    ['com.wondershare.transmore', {
+      status: 'china-linked', basis: 'china-publisher', app_name: 'Tracover: Chat Track & Recover',
+      publisher: 'Shenzhen Wondershare Software Co., Ltd.', publisher_country: 'CN', group: null,
+      reason: 'The current listing for this exact ID names a developer with a Shenzhen, China address. The current store title may differ from the version in the inventory.',
+      sources: [play('com.wondershare.transmore')],
+    }],
+    ['com.einnovation.temu', {
+      status: 'china-linked', basis: 'china-operating-group', app_name: 'Temu',
+      publisher: 'Whaleco Inc.', publisher_country: 'US', group: 'PDD Holdings',
+      reason: 'PDD lists Whaleco Inc. as a subsidiary and Temu as its platform. Its 2025 annual report describes substantial China operations and assets. This is a group-operation link: Whaleco is US-incorporated, and PDD is Cayman-incorporated with principal offices in Ireland.',
+      sources: [play('com.einnovation.temu'), { title: 'PDD 2025 annual report, cover, pp. 1–5, 164 and Exhibit 8.1', url: 'https://investor.pddholdings.com/static-files/92dafbdc-3125-4f2c-a28f-3d61203efbaf' }],
+    }],
+    review('com.oplus.melody', 'Wireless Earphones', 'HEYTAP PTE. LTD.', 'The listing describes an OPPO/OnePlus earphone utility but names a Singapore publisher. A controlling-company connection has not been established in this catalogue.'),
+    review('com.oppo.quicksearchbox', 'Global Search', 'HEYTAP PTE. LTD.', 'The listed publisher is in Singapore. The package namespace alone does not establish its current controlling company or a China link.'),
+    review('com.lenovo.anyshare.gps', 'SHAREit', 'SMART MEDIA4U TECHNOLOGY PTE. LTD.', 'The current listing names a Singapore publisher. The historical-looking package namespace is insufficient to establish current ownership.'),
+    review('com.camerasideas.instashot', 'InShot', 'SHANTANU PTE. LIMITED', 'The current listing names a Singapore publisher. A China-based controlling company has not been established in this catalogue.'),
+    review('com.oakever.tiletrip', 'Tile Explorer - Triple Match', 'OAKEVER GAMES PTE. LTD.', 'The current listing names a Singapore publisher. A China-based controlling company has not been established in this catalogue.'),
+    ['com.oneplus.soundrecorder', {
+      status: 'needs-review', basis: 'unresolved', app_name: null,
+      publisher: null, publisher_country: null, group: null,
+      reason: 'The namespace suggests OnePlus, whose policy identifies a Shenzhen company, but this exact package-to-publisher mapping was not verified. It is excluded from documented matches.',
+      sources: [{ title: 'OnePlus privacy policy (brand evidence only)', url: 'https://www.oneplus.com/gr/legal/privacy-policy' }],
+    }],
+  ];
+  const catalogue = new Map(entries);
+  if (catalogue.size !== entries.length) throw new Error('Duplicate package ID in origin catalogue.');
+  for (const [id, entry] of catalogue) {
+    if (!entry.sources.length || entry.sources.some(source => !/^https:\/\//.test(source.url))) throw new Error(`Missing HTTPS evidence for ${id}.`);
+  }
+
+  function lookup(name) {
+    const entry = catalogue.get(name);
+    return entry ? { ...entry, matched_package: name, checked_at: CHECKED_AT, catalogue_version: VERSION, sources: entry.sources.map(source => ({ ...source })) } : {
+      status: 'unclassified', basis: 'not-in-catalogue', app_name: null,
+      publisher: null, publisher_country: null, group: null, matched_package: null,
+      reason: 'No reviewed exact-ID rule is available. Country and ownership remain unestablished.',
+      checked_at: null, catalogue_version: VERSION, sources: [],
+    };
+  }
+
+  function metadata() {
+    return { version: VERSION, checked_at: CHECKED_AT, scope: SCOPE, limitation: LIMITATION, match_method: 'exact-package-id', rule_count: catalogue.size };
+  }
+  return Object.freeze({ lookup, metadata });
+})();
+
+;
+// Analyses inventory evidence only. It does not read APKs or perform reputation lookups.
+const PackageAnalysis = (() => {
+  'use strict';
+  const VERSION = 2;
+  const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const isHash = value => /^[a-f0-9]{64}$/i.test(value || '');
+
+  function string(value, path) {
+    if (value == null) return null;
+    if (typeof value !== 'string') throw new Error(`${path} must be a string or null.`);
+    return value.trim() || null;
+  }
+
+  function boolean(value, path) {
+    if (value == null) return null;
+    if (typeof value !== 'boolean') throw new Error(`${path} must be true, false, or null.`);
+    return value;
+  }
+
+  function certificate(value, path) {
+    if (value == null) return null;
+    if (!isObject(value)) throw new Error(`${path} must be an object or null.`);
+    const result = {};
+    for (const key of ['Md5', 'Sha1', 'Sha256', 'ValidFrom', 'ValidTo', 'Issuer', 'Subject', 'SignatureAlgorithm']) {
+      result[key] = string(value[key], `${path}.${key}`);
+      if (['ValidFrom', 'ValidTo'].includes(key) && /^0001-01-01(?:T|$)/.test(result[key] || '')) result[key] = null;
+    }
+    const serial = value.SerialNumber;
+    if (serial != null && typeof serial !== 'string' && !Number.isSafeInteger(serial)) {
+      throw new Error(`${path}.SerialNumber must be a string, safe integer, or null.`);
+    }
+    result.SerialNumber = serial == null ? null : String(serial).trim() || null;
+    return Object.values(result).some(item => item !== null) ? result : null;
+  }
+
+  function normalizeFile(value, packageIndex, fileIndex) {
+    const evidence = `$[${packageIndex}].files[${fileIndex}]`;
+    if (!isObject(value)) throw new Error(`${evidence} must be an object.`);
+    const cert = certificate(value.certificate, `${evidence}.certificate`);
+    const verified = boolean(value.verified_certificate, `${evidence}.verified_certificate`);
+    const trusted = boolean(value.trusted_certificate, `${evidence}.trusted_certificate`);
+    const certificateError = string(value.certificate_error, `${evidence}.certificate_error`);
+    const hash = string(value.sha256, `${evidence}.sha256`);
+    return {
+      source_index: fileIndex,
+      evidence,
+      path: string(value.path, `${evidence}.path`),
+      local_name: string(value.local_name, `${evidence}.local_name`),
+      sha256: isHash(hash) ? hash.toLowerCase() : hash,
+      sha256_status: !hash ? 'missing' : isHash(hash) ? 'recorded' : 'invalid',
+      error: string(value.error, `${evidence}.error`),
+      certificate: cert,
+      verified_certificate: verified,
+      trusted_certificate: trusted,
+      certificate_error: certificateError,
+      // False plus absent certificate fields is not evidence of a bad signature.
+      certificate_status: certificateError ? 'error-reported' : verified === true ? 'verified-reported' : cert ? 'metadata-only' : 'unknown',
+    };
+  }
+
+  function normalizePackage(value, index) {
+    const evidence = `$[${index}]`;
+    if (!isObject(value)) throw new Error(`${evidence} must be a package object.`);
+    const name = string(value.name, `${evidence}.name`);
+    if (!name) throw new Error(`${evidence}.name must contain a package name.`);
+    if (name.length > 512) throw new Error(`${evidence}.name is too long.`);
+    const files = value.files ?? [];
+    if (!Array.isArray(files)) throw new Error(`${evidence}.files must be an array.`);
+    const uid = value.uid ?? null;
+    if (uid !== null && (!Number.isSafeInteger(uid) || uid < 0)) throw new Error(`${evidence}.uid must be a non-negative integer or null.`);
+    const system = boolean(value.system, `${evidence}.system`);
+    const thirdParty = boolean(value.third_party, `${evidence}.third_party`);
+    const installer = string(value.installer, `${evidence}.installer`);
+    return {
+      source_index: index, evidence, name, uid,
+      installer: installer?.toLowerCase() === 'null' ? null : installer,
+      system, third_party: thirdParty,
+      disabled: boolean(value.disabled, `${evidence}.disabled`),
+      classification: system === true && thirdParty === true ? 'conflicting' : system === true ? 'system' : thirdParty === true ? 'third-party' : 'unknown',
+      files: files.map((file, fileIndex) => normalizeFile(file, index, fileIndex)),
+      findings: [],
+    };
+  }
+
+  function analyse(text, source = 'packages.json', progress = () => {}) {
+    let input;
+    try { input = JSON.parse(text.replace(/^\uFEFF/, '')); }
+    catch (_) { throw new Error('Invalid JSON. Export the package inventory as UTF-8 JSON and try again.'); }
+    if (!Array.isArray(input)) throw new Error('Expected an array of Android packages with name and files fields. An npm package.json or an exported analysis report is a different format.');
+    if (input.length > AnalysisConfig.MAX_PACKAGES) throw new Error(`This inventory exceeds ${AnalysisConfig.MAX_PACKAGES.toLocaleString('en-US')} package records.`);
+    let fileCount = 0;
+    for (const entry of input) {
+      if (Array.isArray(entry?.files)) fileCount += entry.files.length;
+      if (fileCount > AnalysisConfig.MAX_PACKAGE_FILES) throw new Error('This inventory contains too many APK file entries. Split the inventory and try again.');
+    }
+    progress('Validating package fields…', true);
+    const packages = input.map(normalizePackage);
+    const names = new Map(), uids = new Map(), installers = new Map();
+    for (const pkg of packages) {
+      names.set(pkg.name, (names.get(pkg.name) || 0) + 1);
+      if (pkg.uid !== null) uids.set(pkg.uid, (uids.get(pkg.uid) || 0) + 1);
+      installers.set(pkg.installer, (installers.get(pkg.installer) || 0) + 1);
+    }
+    const counts = {
+      packages: packages.length, distinct_names: names.size, system: 0, third_party: 0,
+      unclassified: 0, disabled: 0, disabled_unknown: 0, apk_files: fileCount,
+      installer_not_recorded: 0, third_party_installer_not_recorded: 0,
+      sha256_recorded: 0, sha256_missing: 0, sha256_invalid: 0,
+      certificate_metadata: 0, certificate_verified_reported: 0, certificate_unknown: 0,
+      certificate_errors: 0, collection_errors: 0, packages_with_findings: 0,
+      packages_with_data_errors: 0, system_packages_in_data_app: 0,
+      shared_uid_groups: [...uids.values()].filter(count => count > 1).length,
+    };
+    for (const pkg of packages) {
+      const add = (code, level, detail, evidence = pkg.evidence) => pkg.findings.push({ code, level, detail, evidence });
+      if (pkg.classification === 'system') counts.system++;
+      else if (pkg.classification === 'third-party') counts.third_party++;
+      else counts.unclassified++;
+      if (pkg.disabled === true) counts.disabled++;
+      if (pkg.disabled === null) counts.disabled_unknown++;
+      if (pkg.installer === null) {
+        counts.installer_not_recorded++;
+        if (pkg.classification === 'third-party') {
+          counts.third_party_installer_not_recorded++;
+          add('installer-not-recorded', 'info', 'No installer is recorded for this third-party package. The installation source cannot be established from this inventory.', `${pkg.evidence}.installer`);
+        }
+      }
+      if (pkg.classification === 'conflicting') add('classification-conflict', 'review', 'Both system and third_party are true. Check the inventory collector.');
+      if (!pkg.files.length) add('files-not-recorded', 'info', 'No APK file entries were supplied.', `${pkg.evidence}.files`);
+      if (names.get(pkg.name) > 1) add('duplicate-package-name', 'info', `This name occurs ${names.get(pkg.name)} times. Records are kept separately; this schema does not identify Android user profiles.`, `${pkg.evidence}.name`);
+      if (pkg.classification === 'system' && pkg.files.some(file => file.path?.startsWith('/data/app/'))) counts.system_packages_in_data_app++;
+      for (const file of pkg.files) {
+        counts[`sha256_${file.sha256_status}`]++;
+        if (file.sha256_status !== 'recorded') add(`sha256-${file.sha256_status}`, file.sha256_status === 'invalid' ? 'review' : 'info', file.sha256_status === 'invalid' ? 'The recorded APK SHA-256 is not 64 hexadecimal characters.' : 'No APK SHA-256 is recorded.', `${file.evidence}.sha256`);
+        if (!file.path) add('path-not-recorded', 'info', 'No APK path is recorded.', `${file.evidence}.path`);
+        if (file.certificate) counts.certificate_metadata++;
+        if (file.verified_certificate === true) counts.certificate_verified_reported++;
+        if (file.certificate_status === 'unknown') counts.certificate_unknown++;
+        if (file.error) { counts.collection_errors++; add('collection-error', 'review', file.error, `${file.evidence}.error`); }
+        if (file.certificate_error) { counts.certificate_errors++; add('certificate-error', 'review', file.certificate_error, `${file.evidence}.certificate_error`); }
+      }
+      if (pkg.findings.length) counts.packages_with_findings++;
+      if (pkg.findings.some(finding => finding.level === 'review')) counts.packages_with_data_errors++;
+    }
+    return withOrigins({
+      tool: 'packages', version: VERSION, source_file: source, analyzed_at: new Date().toISOString(),
+      counts, packages,
+      installers: [...installers].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))),
+      notes: [
+        'All values describe the supplied inventory. APK contents were not provided or examined.',
+        'Recorded SHA-256 values are checked for format only; they are not recomputed from APK bytes or checked against a reputation service.',
+        'Empty certificate fields and false verification/trust flags do not establish an invalid signature. Verification is not established unless a result is explicitly recorded.',
+        'Installer names, system flags, shared UIDs, and package names do not establish whether an app is safe or malicious.',
+        'System packages under /data/app can be updated system applications. Their path alone does not change their reported classification.',
+        'Permissions, accessibility status, version numbers, install times, and behaviour are not available in this schema.',
+      ],
+      limits: { package_records: AnalysisConfig.MAX_PACKAGES, apk_files: AnalysisConfig.MAX_PACKAGE_FILES, file_bytes: AnalysisConfig.MAX_PACKAGE_BYTES },
+    });
+  }
+
+  // Refresh saved v1/v2 reports against the shipped catalogue without changing
+  // their capture date or mutating the original evidence.
+  function withOrigins(summary) {
+    const packages = summary.packages.map(pkg => ({ ...pkg, origin: PackageOrigins.lookup(pkg.name) }));
+    const counts = { ...summary.counts, china_linked: 0, china_publisher: 0, origin_needs_review: 0, origin_unclassified: 0 };
+    for (const pkg of packages) {
+      if (pkg.origin.status === 'china-linked') counts.china_linked++;
+      if (pkg.origin.basis === 'china-publisher') counts.china_publisher++;
+      if (pkg.origin.status === 'needs-review') counts.origin_needs_review++;
+      if (pkg.origin.status === 'unclassified') counts.origin_unclassified++;
+    }
+    return { ...summary, version: VERSION, packages, counts, origin_catalogue: PackageOrigins.metadata() };
+  }
+
+  function matches(pkg, filters = {}) {
+    const origin = pkg.origin || PackageOrigins.lookup(pkg.name);
+    if (filters.origin === 'china-publisher' && origin.basis !== 'china-publisher') return false;
+    if (filters.origin === 'exclude-china-linked' && origin.status === 'china-linked') return false;
+    if (['china-linked', 'needs-review', 'unclassified'].includes(filters.origin) && origin.status !== filters.origin) return false;
+    if (filters.type && pkg.classification !== filters.type) return false;
+    if (filters.disabled === 'true' && pkg.disabled !== true) return false;
+    if (filters.disabled === 'false' && pkg.disabled !== false) return false;
+    if (filters.disabled === 'unknown' && pkg.disabled !== null) return false;
+    if (filters.installer && pkg.installer !== filters.installer) return false;
+    if (filters.review === 'missing-installer' && pkg.installer !== null) return false;
+    if (filters.review === 'third-party-missing-installer' && !(pkg.installer === null && pkg.classification === 'third-party')) return false;
+    if (filters.review === 'findings' && !pkg.findings.length) return false;
+    if (filters.review === 'data-errors' && !pkg.findings.some(finding => finding.level === 'review')) return false;
+    if (filters.review === 'certificate-unknown' && !pkg.files.some(file => file.certificate_status === 'unknown')) return false;
+    const query = (filters.query || '').trim().toLowerCase();
+    if (!query) return true;
+    if (`${pkg.name} ${pkg.uid ?? ''} ${pkg.installer ?? ''} ${origin.app_name ?? ''} ${origin.publisher ?? ''} ${origin.group ?? ''}`.toLowerCase().includes(query)) return true;
+    return pkg.files.some(file => `${file.path ?? ''} ${file.sha256 ?? ''} ${file.certificate?.Sha256 ?? ''}`.toLowerCase().includes(query));
+  }
+
+  function page(packages, filters = {}, requested = 0) {
+    const matchesFound = packages.filter(pkg => matches(pkg, filters));
+    const pages = Math.max(1, Math.ceil(matchesFound.length / AnalysisConfig.PACKAGE_PAGE_SIZE));
+    const value = Number(requested);
+    const current = Math.min(pages - 1, Math.max(0, Number.isFinite(value) ? Math.floor(value) : 0));
+    return { total: matchesFound.length, page: current, pages, records: matchesFound.slice(current * AnalysisConfig.PACKAGE_PAGE_SIZE, (current + 1) * AnalysisConfig.PACKAGE_PAGE_SIZE) };
+  }
+
+  function isSummary(value) {
+    if (!isObject(value) || value.tool !== 'packages' || ![1, VERSION].includes(value.version) || !isObject(value.counts)) return false;
+    if (!Array.isArray(value.packages) || value.packages.length > AnalysisConfig.MAX_PACKAGES || !Array.isArray(value.installers) || !Array.isArray(value.notes)) return false;
+    return value.packages.every(pkg => isObject(pkg) && typeof pkg.name === 'string' && Number.isSafeInteger(pkg.source_index) && Array.isArray(pkg.files) && Array.isArray(pkg.findings) && pkg.files.every(isObject) && pkg.findings.every(isObject)) && value.installers.every(row => Array.isArray(row) && row.length === 2);
+  }
+
+  function filteredReport(summary, filters = {}) {
+    const selection = Object.fromEntries(['query', 'type', 'disabled', 'installer', 'review', 'origin'].map(key => [key, typeof filters[key] === 'string' ? filters[key] : '']));
+    const packages = summary.packages.filter(pkg => matches(pkg, selection));
+    return {
+      tool: 'packages-filtered', version: 1, source_file: summary.source_file,
+      analyzed_at: summary.analyzed_at, exported_at: new Date().toISOString(),
+      inventory_packages: summary.packages.length, matching_packages: packages.length,
+      filters: selection, origin_catalogue: summary.origin_catalogue,
+      notes: summary.notes, packages,
+    };
+  }
+
+  return { analyse, matches, page, isSummary, withOrigins, filteredReport };
+})();
 
 ;
 const Logcat = (() => {
@@ -1631,201 +1857,6 @@ function bugReportDetails(text, result, logData) {
 })();
 
 ;
-// Analyses inventory evidence only. It does not read APKs or perform reputation lookups.
-const PackageAnalysis = (() => {
-  'use strict';
-  const VERSION = 1;
-  const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-  const isHash = value => /^[a-f0-9]{64}$/i.test(value || '');
-
-  function string(value, path) {
-    if (value == null) return null;
-    if (typeof value !== 'string') throw new Error(`${path} must be a string or null.`);
-    return value.trim() || null;
-  }
-
-  function boolean(value, path) {
-    if (value == null) return null;
-    if (typeof value !== 'boolean') throw new Error(`${path} must be true, false, or null.`);
-    return value;
-  }
-
-  function certificate(value, path) {
-    if (value == null) return null;
-    if (!isObject(value)) throw new Error(`${path} must be an object or null.`);
-    const result = {};
-    for (const key of ['Md5', 'Sha1', 'Sha256', 'ValidFrom', 'ValidTo', 'Issuer', 'Subject', 'SignatureAlgorithm']) {
-      result[key] = string(value[key], `${path}.${key}`);
-      if (['ValidFrom', 'ValidTo'].includes(key) && /^0001-01-01(?:T|$)/.test(result[key] || '')) result[key] = null;
-    }
-    const serial = value.SerialNumber;
-    if (serial != null && typeof serial !== 'string' && !Number.isSafeInteger(serial)) {
-      throw new Error(`${path}.SerialNumber must be a string, safe integer, or null.`);
-    }
-    result.SerialNumber = serial == null ? null : String(serial).trim() || null;
-    return Object.values(result).some(item => item !== null) ? result : null;
-  }
-
-  function normalizeFile(value, packageIndex, fileIndex) {
-    const evidence = `$[${packageIndex}].files[${fileIndex}]`;
-    if (!isObject(value)) throw new Error(`${evidence} must be an object.`);
-    const cert = certificate(value.certificate, `${evidence}.certificate`);
-    const verified = boolean(value.verified_certificate, `${evidence}.verified_certificate`);
-    const trusted = boolean(value.trusted_certificate, `${evidence}.trusted_certificate`);
-    const certificateError = string(value.certificate_error, `${evidence}.certificate_error`);
-    const hash = string(value.sha256, `${evidence}.sha256`);
-    return {
-      source_index: fileIndex,
-      evidence,
-      path: string(value.path, `${evidence}.path`),
-      local_name: string(value.local_name, `${evidence}.local_name`),
-      sha256: isHash(hash) ? hash.toLowerCase() : hash,
-      sha256_status: !hash ? 'missing' : isHash(hash) ? 'recorded' : 'invalid',
-      error: string(value.error, `${evidence}.error`),
-      certificate: cert,
-      verified_certificate: verified,
-      trusted_certificate: trusted,
-      certificate_error: certificateError,
-      // False plus absent certificate fields is not evidence of a bad signature.
-      certificate_status: certificateError ? 'error-reported' : verified === true ? 'verified-reported' : cert ? 'metadata-only' : 'unknown',
-    };
-  }
-
-  function normalizePackage(value, index) {
-    const evidence = `$[${index}]`;
-    if (!isObject(value)) throw new Error(`${evidence} must be a package object.`);
-    const name = string(value.name, `${evidence}.name`);
-    if (!name) throw new Error(`${evidence}.name must contain a package name.`);
-    if (name.length > 512) throw new Error(`${evidence}.name is too long.`);
-    const files = value.files ?? [];
-    if (!Array.isArray(files)) throw new Error(`${evidence}.files must be an array.`);
-    const uid = value.uid ?? null;
-    if (uid !== null && (!Number.isSafeInteger(uid) || uid < 0)) throw new Error(`${evidence}.uid must be a non-negative integer or null.`);
-    const system = boolean(value.system, `${evidence}.system`);
-    const thirdParty = boolean(value.third_party, `${evidence}.third_party`);
-    const installer = string(value.installer, `${evidence}.installer`);
-    return {
-      source_index: index, evidence, name, uid,
-      installer: installer?.toLowerCase() === 'null' ? null : installer,
-      system, third_party: thirdParty,
-      disabled: boolean(value.disabled, `${evidence}.disabled`),
-      classification: system === true && thirdParty === true ? 'conflicting' : system === true ? 'system' : thirdParty === true ? 'third-party' : 'unknown',
-      files: files.map((file, fileIndex) => normalizeFile(file, index, fileIndex)),
-      findings: [],
-    };
-  }
-
-  function analyse(text, source = 'packages.json', progress = () => {}) {
-    let input;
-    try { input = JSON.parse(text.replace(/^\uFEFF/, '')); }
-    catch (_) { throw new Error('Invalid JSON. Export the package inventory as UTF-8 JSON and try again.'); }
-    if (!Array.isArray(input)) throw new Error('Expected an array of Android packages with name and files fields. An npm package.json or an exported analysis report is a different format.');
-    if (input.length > AnalysisConfig.MAX_PACKAGES) throw new Error(`This inventory exceeds ${AnalysisConfig.MAX_PACKAGES.toLocaleString('en-US')} package records.`);
-    let fileCount = 0;
-    for (const entry of input) {
-      if (Array.isArray(entry?.files)) fileCount += entry.files.length;
-      if (fileCount > AnalysisConfig.MAX_PACKAGE_FILES) throw new Error('This inventory contains too many APK file entries. Split the inventory and try again.');
-    }
-    progress('Validating package fields…', true);
-    const packages = input.map(normalizePackage);
-    const names = new Map(), uids = new Map(), installers = new Map();
-    for (const pkg of packages) {
-      names.set(pkg.name, (names.get(pkg.name) || 0) + 1);
-      if (pkg.uid !== null) uids.set(pkg.uid, (uids.get(pkg.uid) || 0) + 1);
-      installers.set(pkg.installer, (installers.get(pkg.installer) || 0) + 1);
-    }
-    const counts = {
-      packages: packages.length, distinct_names: names.size, system: 0, third_party: 0,
-      unclassified: 0, disabled: 0, disabled_unknown: 0, apk_files: fileCount,
-      installer_not_recorded: 0, third_party_installer_not_recorded: 0,
-      sha256_recorded: 0, sha256_missing: 0, sha256_invalid: 0,
-      certificate_metadata: 0, certificate_verified_reported: 0, certificate_unknown: 0,
-      certificate_errors: 0, collection_errors: 0, packages_with_findings: 0,
-      packages_with_data_errors: 0, system_packages_in_data_app: 0,
-      shared_uid_groups: [...uids.values()].filter(count => count > 1).length,
-    };
-    for (const pkg of packages) {
-      const add = (code, level, detail, evidence = pkg.evidence) => pkg.findings.push({ code, level, detail, evidence });
-      if (pkg.classification === 'system') counts.system++;
-      else if (pkg.classification === 'third-party') counts.third_party++;
-      else counts.unclassified++;
-      if (pkg.disabled === true) counts.disabled++;
-      if (pkg.disabled === null) counts.disabled_unknown++;
-      if (pkg.installer === null) {
-        counts.installer_not_recorded++;
-        if (pkg.classification === 'third-party') {
-          counts.third_party_installer_not_recorded++;
-          add('installer-not-recorded', 'info', 'No installer is recorded for this third-party package. The installation source cannot be established from this inventory.', `${pkg.evidence}.installer`);
-        }
-      }
-      if (pkg.classification === 'conflicting') add('classification-conflict', 'review', 'Both system and third_party are true. Check the inventory collector.');
-      if (!pkg.files.length) add('files-not-recorded', 'info', 'No APK file entries were supplied.', `${pkg.evidence}.files`);
-      if (names.get(pkg.name) > 1) add('duplicate-package-name', 'info', `This name occurs ${names.get(pkg.name)} times. Records are kept separately; this schema does not identify Android user profiles.`, `${pkg.evidence}.name`);
-      if (pkg.classification === 'system' && pkg.files.some(file => file.path?.startsWith('/data/app/'))) counts.system_packages_in_data_app++;
-      for (const file of pkg.files) {
-        counts[`sha256_${file.sha256_status}`]++;
-        if (file.sha256_status !== 'recorded') add(`sha256-${file.sha256_status}`, file.sha256_status === 'invalid' ? 'review' : 'info', file.sha256_status === 'invalid' ? 'The recorded APK SHA-256 is not 64 hexadecimal characters.' : 'No APK SHA-256 is recorded.', `${file.evidence}.sha256`);
-        if (!file.path) add('path-not-recorded', 'info', 'No APK path is recorded.', `${file.evidence}.path`);
-        if (file.certificate) counts.certificate_metadata++;
-        if (file.verified_certificate === true) counts.certificate_verified_reported++;
-        if (file.certificate_status === 'unknown') counts.certificate_unknown++;
-        if (file.error) { counts.collection_errors++; add('collection-error', 'review', file.error, `${file.evidence}.error`); }
-        if (file.certificate_error) { counts.certificate_errors++; add('certificate-error', 'review', file.certificate_error, `${file.evidence}.certificate_error`); }
-      }
-      if (pkg.findings.length) counts.packages_with_findings++;
-      if (pkg.findings.some(finding => finding.level === 'review')) counts.packages_with_data_errors++;
-    }
-    return {
-      tool: 'packages', version: VERSION, source_file: source, analyzed_at: new Date().toISOString(),
-      counts, packages,
-      installers: [...installers].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))),
-      notes: [
-        'All values describe the supplied inventory. APK contents were not provided or examined.',
-        'Recorded SHA-256 values are checked for format only; they are not recomputed from APK bytes or checked against a reputation service.',
-        'Empty certificate fields and false verification/trust flags do not establish an invalid signature. Verification is not established unless a result is explicitly recorded.',
-        'Installer names, system flags, shared UIDs, and package names do not establish whether an app is safe or malicious.',
-        'System packages under /data/app can be updated system applications. Their path alone does not change their reported classification.',
-        'Permissions, accessibility status, version numbers, install times, and behaviour are not available in this schema.',
-      ],
-      limits: { package_records: AnalysisConfig.MAX_PACKAGES, apk_files: AnalysisConfig.MAX_PACKAGE_FILES, file_bytes: AnalysisConfig.MAX_PACKAGE_BYTES },
-    };
-  }
-
-  function matches(pkg, filters = {}) {
-    if (filters.type && pkg.classification !== filters.type) return false;
-    if (filters.disabled === 'true' && pkg.disabled !== true) return false;
-    if (filters.disabled === 'false' && pkg.disabled !== false) return false;
-    if (filters.disabled === 'unknown' && pkg.disabled !== null) return false;
-    if (filters.installer && pkg.installer !== filters.installer) return false;
-    if (filters.review === 'missing-installer' && pkg.installer !== null) return false;
-    if (filters.review === 'third-party-missing-installer' && !(pkg.installer === null && pkg.classification === 'third-party')) return false;
-    if (filters.review === 'findings' && !pkg.findings.length) return false;
-    if (filters.review === 'data-errors' && !pkg.findings.some(finding => finding.level === 'review')) return false;
-    if (filters.review === 'certificate-unknown' && !pkg.files.some(file => file.certificate_status === 'unknown')) return false;
-    const query = (filters.query || '').trim().toLowerCase();
-    if (!query) return true;
-    if (`${pkg.name} ${pkg.uid ?? ''} ${pkg.installer ?? ''}`.toLowerCase().includes(query)) return true;
-    return pkg.files.some(file => `${file.path ?? ''} ${file.sha256 ?? ''} ${file.certificate?.Sha256 ?? ''}`.toLowerCase().includes(query));
-  }
-
-  function page(packages, filters = {}, requested = 0) {
-    const matchesFound = packages.filter(pkg => matches(pkg, filters));
-    const pages = Math.max(1, Math.ceil(matchesFound.length / AnalysisConfig.PACKAGE_PAGE_SIZE));
-    const value = Number(requested);
-    const current = Math.min(pages - 1, Math.max(0, Number.isFinite(value) ? Math.floor(value) : 0));
-    return { total: matchesFound.length, page: current, pages, records: matchesFound.slice(current * AnalysisConfig.PACKAGE_PAGE_SIZE, (current + 1) * AnalysisConfig.PACKAGE_PAGE_SIZE) };
-  }
-
-  function isSummary(value) {
-    if (!isObject(value) || value.tool !== 'packages' || value.version !== VERSION || !isObject(value.counts)) return false;
-    if (!Array.isArray(value.packages) || value.packages.length > AnalysisConfig.MAX_PACKAGES || !Array.isArray(value.installers) || !Array.isArray(value.notes)) return false;
-    return value.packages.every(pkg => isObject(pkg) && typeof pkg.name === 'string' && Number.isSafeInteger(pkg.source_index) && Array.isArray(pkg.files) && Array.isArray(pkg.findings) && pkg.files.every(isObject) && pkg.findings.every(isObject)) && value.installers.every(row => Array.isArray(row) && row.length === 2);
-  }
-
-  return { analyse, matches, page, isSummary };
-})();
-
-;
 (() => {
 'use strict';
 const { MAX_FILE_BYTES, FILE_LIMIT_LABEL, MAX_LINES, MAX_ARCHIVE_ENTRIES } = AnalysisConfig;
@@ -1966,8 +1997,3 @@ self.onmessage = async ({ data }) => {
   }
 };
 })();
-
-</script>
-<script src="bugreport.js"></script>
-</body>
-</html>

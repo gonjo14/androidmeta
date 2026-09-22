@@ -35,10 +35,81 @@ function validateCapture(file, tool = 'logcat') {
   return null;
 }
 
+;
+// Curated public-source evidence, not a reputation or APK-signature database.
+// Add exact package IDs only, with a dated source and an explicit rationale.
+const PackageOrigins = (() => {
+  'use strict';
+  const VERSION = '2026-09-22.1';
+  const CHECKED_AT = '2026-09-22';
+  const SCOPE = 'China-linked means a listed publisher based in mainland China, or a documented parent group with substantial operations there. Publisher location and group links are shown separately.';
+  const LIMITATION = 'This is a limited, dated catalogue matched by exact package ID. It does not authenticate the installed APK, establish data destinations, or assess app safety. Unclassified does not mean non-Chinese.';
+  const play = id => ({ title: 'Google Play publisher listing', url: `https://play.google.com/store/apps/details?id=${id}&hl=en` });
+  const oneplus = (id, appName) => [id, {
+    status: 'china-linked', basis: 'china-publisher', app_name: appName,
+    publisher: 'OnePlus Ltd. / 深圳市万普拉斯科技有限公司', publisher_country: 'CN', group: null,
+    reason: 'The exact package listing identifies this publisher with a registered address in Shenzhen, China.',
+    sources: [play(id)],
+  }];
+  const review = (id, appName, publisher, reason) => [id, {
+    status: 'needs-review', basis: 'unresolved', app_name: appName,
+    publisher, publisher_country: 'SG', group: null, reason, sources: [play(id)],
+  }];
+  const entries = [
+    oneplus('com.oneplus.note', 'OnePlus Notes'),
+    oneplus('com.oneplus.backuprestore', 'Clone Phone - OnePlus app'),
+    oneplus('net.oneplus.forums', 'OnePlus Community'),
+    ['com.wondershare.transmore', {
+      status: 'china-linked', basis: 'china-publisher', app_name: 'Tracover: Chat Track & Recover',
+      publisher: 'Shenzhen Wondershare Software Co., Ltd.', publisher_country: 'CN', group: null,
+      reason: 'The current listing for this exact ID names a developer with a Shenzhen, China address. The current store title may differ from the version in the inventory.',
+      sources: [play('com.wondershare.transmore')],
+    }],
+    ['com.einnovation.temu', {
+      status: 'china-linked', basis: 'china-operating-group', app_name: 'Temu',
+      publisher: 'Whaleco Inc.', publisher_country: 'US', group: 'PDD Holdings',
+      reason: 'PDD lists Whaleco Inc. as a subsidiary and Temu as its platform. Its 2025 annual report describes substantial China operations and assets. This is a group-operation link: Whaleco is US-incorporated, and PDD is Cayman-incorporated with principal offices in Ireland.',
+      sources: [play('com.einnovation.temu'), { title: 'PDD 2025 annual report, cover, pp. 1–5, 164 and Exhibit 8.1', url: 'https://investor.pddholdings.com/static-files/92dafbdc-3125-4f2c-a28f-3d61203efbaf' }],
+    }],
+    review('com.oplus.melody', 'Wireless Earphones', 'HEYTAP PTE. LTD.', 'The listing describes an OPPO/OnePlus earphone utility but names a Singapore publisher. A controlling-company connection has not been established in this catalogue.'),
+    review('com.oppo.quicksearchbox', 'Global Search', 'HEYTAP PTE. LTD.', 'The listed publisher is in Singapore. The package namespace alone does not establish its current controlling company or a China link.'),
+    review('com.lenovo.anyshare.gps', 'SHAREit', 'SMART MEDIA4U TECHNOLOGY PTE. LTD.', 'The current listing names a Singapore publisher. The historical-looking package namespace is insufficient to establish current ownership.'),
+    review('com.camerasideas.instashot', 'InShot', 'SHANTANU PTE. LIMITED', 'The current listing names a Singapore publisher. A China-based controlling company has not been established in this catalogue.'),
+    review('com.oakever.tiletrip', 'Tile Explorer - Triple Match', 'OAKEVER GAMES PTE. LTD.', 'The current listing names a Singapore publisher. A China-based controlling company has not been established in this catalogue.'),
+    ['com.oneplus.soundrecorder', {
+      status: 'needs-review', basis: 'unresolved', app_name: null,
+      publisher: null, publisher_country: null, group: null,
+      reason: 'The namespace suggests OnePlus, whose policy identifies a Shenzhen company, but this exact package-to-publisher mapping was not verified. It is excluded from documented matches.',
+      sources: [{ title: 'OnePlus privacy policy (brand evidence only)', url: 'https://www.oneplus.com/gr/legal/privacy-policy' }],
+    }],
+  ];
+  const catalogue = new Map(entries);
+  if (catalogue.size !== entries.length) throw new Error('Duplicate package ID in origin catalogue.');
+  for (const [id, entry] of catalogue) {
+    if (!entry.sources.length || entry.sources.some(source => !/^https:\/\//.test(source.url))) throw new Error(`Missing HTTPS evidence for ${id}.`);
+  }
+
+  function lookup(name) {
+    const entry = catalogue.get(name);
+    return entry ? { ...entry, matched_package: name, checked_at: CHECKED_AT, catalogue_version: VERSION, sources: entry.sources.map(source => ({ ...source })) } : {
+      status: 'unclassified', basis: 'not-in-catalogue', app_name: null,
+      publisher: null, publisher_country: null, group: null, matched_package: null,
+      reason: 'No reviewed exact-ID rule is available. Country and ownership remain unestablished.',
+      checked_at: null, catalogue_version: VERSION, sources: [],
+    };
+  }
+
+  function metadata() {
+    return { version: VERSION, checked_at: CHECKED_AT, scope: SCOPE, limitation: LIMITATION, match_method: 'exact-package-id', rule_count: catalogue.size };
+  }
+  return Object.freeze({ lookup, metadata });
+})();
+
+;
 // Analyses inventory evidence only. It does not read APKs or perform reputation lookups.
 const PackageAnalysis = (() => {
   'use strict';
-  const VERSION = 1;
+  const VERSION = 2;
   const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   const isHash = value => /^[a-f0-9]{64}$/i.test(value || '');
 
@@ -179,7 +250,7 @@ const PackageAnalysis = (() => {
       if (pkg.findings.length) counts.packages_with_findings++;
       if (pkg.findings.some(finding => finding.level === 'review')) counts.packages_with_data_errors++;
     }
-    return {
+    return withOrigins({
       tool: 'packages', version: VERSION, source_file: source, analyzed_at: new Date().toISOString(),
       counts, packages,
       installers: [...installers].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))),
@@ -192,10 +263,28 @@ const PackageAnalysis = (() => {
         'Permissions, accessibility status, version numbers, install times, and behaviour are not available in this schema.',
       ],
       limits: { package_records: AnalysisConfig.MAX_PACKAGES, apk_files: AnalysisConfig.MAX_PACKAGE_FILES, file_bytes: AnalysisConfig.MAX_PACKAGE_BYTES },
-    };
+    });
+  }
+
+  // Refresh saved v1/v2 reports against the shipped catalogue without changing
+  // their capture date or mutating the original evidence.
+  function withOrigins(summary) {
+    const packages = summary.packages.map(pkg => ({ ...pkg, origin: PackageOrigins.lookup(pkg.name) }));
+    const counts = { ...summary.counts, china_linked: 0, china_publisher: 0, origin_needs_review: 0, origin_unclassified: 0 };
+    for (const pkg of packages) {
+      if (pkg.origin.status === 'china-linked') counts.china_linked++;
+      if (pkg.origin.basis === 'china-publisher') counts.china_publisher++;
+      if (pkg.origin.status === 'needs-review') counts.origin_needs_review++;
+      if (pkg.origin.status === 'unclassified') counts.origin_unclassified++;
+    }
+    return { ...summary, version: VERSION, packages, counts, origin_catalogue: PackageOrigins.metadata() };
   }
 
   function matches(pkg, filters = {}) {
+    const origin = pkg.origin || PackageOrigins.lookup(pkg.name);
+    if (filters.origin === 'china-publisher' && origin.basis !== 'china-publisher') return false;
+    if (filters.origin === 'exclude-china-linked' && origin.status === 'china-linked') return false;
+    if (['china-linked', 'needs-review', 'unclassified'].includes(filters.origin) && origin.status !== filters.origin) return false;
     if (filters.type && pkg.classification !== filters.type) return false;
     if (filters.disabled === 'true' && pkg.disabled !== true) return false;
     if (filters.disabled === 'false' && pkg.disabled !== false) return false;
@@ -208,7 +297,7 @@ const PackageAnalysis = (() => {
     if (filters.review === 'certificate-unknown' && !pkg.files.some(file => file.certificate_status === 'unknown')) return false;
     const query = (filters.query || '').trim().toLowerCase();
     if (!query) return true;
-    if (`${pkg.name} ${pkg.uid ?? ''} ${pkg.installer ?? ''}`.toLowerCase().includes(query)) return true;
+    if (`${pkg.name} ${pkg.uid ?? ''} ${pkg.installer ?? ''} ${origin.app_name ?? ''} ${origin.publisher ?? ''} ${origin.group ?? ''}`.toLowerCase().includes(query)) return true;
     return pkg.files.some(file => `${file.path ?? ''} ${file.sha256 ?? ''} ${file.certificate?.Sha256 ?? ''}`.toLowerCase().includes(query));
   }
 
@@ -221,22 +310,46 @@ const PackageAnalysis = (() => {
   }
 
   function isSummary(value) {
-    if (!isObject(value) || value.tool !== 'packages' || value.version !== VERSION || !isObject(value.counts)) return false;
+    if (!isObject(value) || value.tool !== 'packages' || ![1, VERSION].includes(value.version) || !isObject(value.counts)) return false;
     if (!Array.isArray(value.packages) || value.packages.length > AnalysisConfig.MAX_PACKAGES || !Array.isArray(value.installers) || !Array.isArray(value.notes)) return false;
     return value.packages.every(pkg => isObject(pkg) && typeof pkg.name === 'string' && Number.isSafeInteger(pkg.source_index) && Array.isArray(pkg.files) && Array.isArray(pkg.findings) && pkg.files.every(isObject) && pkg.findings.every(isObject)) && value.installers.every(row => Array.isArray(row) && row.length === 2);
   }
 
-  return { analyse, matches, page, isSummary };
+  function filteredReport(summary, filters = {}) {
+    const selection = Object.fromEntries(['query', 'type', 'disabled', 'installer', 'review', 'origin'].map(key => [key, typeof filters[key] === 'string' ? filters[key] : '']));
+    const packages = summary.packages.filter(pkg => matches(pkg, selection));
+    return {
+      tool: 'packages-filtered', version: 1, source_file: summary.source_file,
+      analyzed_at: summary.analyzed_at, exported_at: new Date().toISOString(),
+      inventory_packages: summary.packages.length, matching_packages: packages.length,
+      filters: selection, origin_catalogue: summary.origin_catalogue,
+      notes: summary.notes, packages,
+    };
+  }
+
+  return { analyse, matches, page, isSummary, withOrigins, filteredReport };
 })();
 
+;
 const PackagesView = (() => {
   'use strict';
   const classification = { system: 'System (reported)', 'third-party': 'Third-party (reported)', unknown: 'Not established', conflicting: 'Conflicting flags' };
   const certificateLabels = { 'verified-reported': 'Verified according to source', 'error-reported': 'Certificate error reported', 'metadata-only': 'Metadata present; verification not established', unknown: 'Verification not established' };
   const recordedBoolean = value => value === true ? 'True' : value === false ? 'False' : 'Not recorded';
+  const originLabels = { 'china-linked': 'China-linked · documented', 'needs-review': 'Needs review', unclassified: 'Unclassified' };
+  const basisLabels = { 'china-publisher': 'Publisher based in China', 'china-operating-group': 'Group operations in China', unresolved: 'Ownership or mapping unresolved', 'not-in-catalogue': 'No catalogue rule' };
+
+  function originBadge(origin, escapeHTML) {
+    const tone = origin.status === 'china-linked' ? 'linked' : origin.status === 'needs-review' ? 'warn' : 'neutral';
+    return `<span class="badge ${tone}">${escapeHTML(originLabels[origin.status])}</span>`;
+  }
+
+  function sourceLinks(origin, escapeHTML) {
+    return origin.sources.filter(source => /^https:\/\//.test(source.url)).map(source => `<li><a href="${escapeHTML(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(source.title)}</a></li>`).join('');
+  }
 
   function render(summary, view, helpers) {
-    const { $, escapeHTML, number, stat, panel, table, notes } = helpers;
+    const { $, escapeHTML, number, stat, panel, table, notes, download } = helpers;
     const c = summary.counts;
     const certificateNote = c.certificate_metadata === 0
       ? `No certificate metadata is populated in the ${number(c.apk_files)} APK entries.`
@@ -248,6 +361,13 @@ const PackagesView = (() => {
         ${stat('Third-party', c.third_party, 'Classification reported by the collector')}
         ${stat('Disabled', c.disabled, 'State reported by the collector')}
       </div>
+      <section class="panel origin-panel">
+        <div class="panel-header"><h2>China-linked apps</h2><span class="tiny">Catalogue checked ${escapeHTML(summary.origin_catalogue.checked_at)}</span></div>
+        <p>${escapeHTML(summary.origin_catalogue.scope)}</p>
+        <div class="origin-counts"><span><strong>${number(c.china_linked)}</strong> documented matches</span><span><strong>${number(c.origin_needs_review)}</strong> need review</span><span><strong>${number(c.origin_unclassified)}</strong> unclassified</span></div>
+        <p class="hint">${escapeHTML(summary.origin_catalogue.limitation)}</p>
+        <button class="button primary" id="package-show-china">Show documented matches</button>
+      </section>
       <div class="notice"><strong>${escapeHTML(certificateNote)}</strong><p>${number(c.certificate_verified_reported)} entries report successful verification. Empty certificate fields and false flags leave verification unestablished. No APK bytes are examined here.</p></div>
       <div class="split equal">
         ${panel('Inventory coverage', '', table(['Evidence', 'Count'], [
@@ -264,13 +384,14 @@ const PackagesView = (() => {
       <section class="panel">
         <h2>Package explorer</h2>
         <div class="filters">
-          <div class="field"><label for="package-query">Search</label><input id="package-query" type="search" placeholder="Package, UID, installer, path, SHA-256…"></div>
+          <div class="field"><label for="package-query">Search</label><input id="package-query" type="search" placeholder="Package, app, publisher, UID, SHA-256…"></div>
+          <div class="field"><label for="package-origin">China connection</label><select id="package-origin"><option value="">All packages</option><option value="china-linked">Documented China links</option><option value="china-publisher">Publisher based in China only</option><option value="needs-review">Needs review</option><option value="unclassified">Unclassified</option><option value="exclude-china-linked">Exclude documented matches</option></select></div>
           <div class="field"><label for="package-type">Reported type</label><select id="package-type"><option value="">All types</option><option value="system">System</option><option value="third-party">Third-party</option><option value="unknown">Unknown</option><option value="conflicting">Conflicting</option></select></div>
           <div class="field"><label for="package-disabled">Reported state</label><select id="package-disabled"><option value="">All states</option><option value="false">Not disabled</option><option value="true">Disabled</option><option value="unknown">Not recorded</option></select></div>
           <div class="field"><label for="package-installer">Installer</label><select id="package-installer"><option value="">All installers</option>${summary.installers.filter(([name]) => name !== null).map(([name]) => `<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join('')}</select></div>
           <div class="field"><label for="package-review">Evidence filter</label><select id="package-review"><option value="">All packages</option><option value="third-party-missing-installer">Third-party; installer not recorded</option><option value="missing-installer">Any type; installer not recorded</option><option value="findings">Has review notes</option><option value="data-errors">Data errors reported</option><option value="certificate-unknown">Has an APK with unknown verification</option></select></div>
         </div>
-        <div class="filter-footer"><span id="package-count" role="status"></span><button class="button small" id="package-clear">Clear filters</button></div>
+        <div class="filter-footer"><span id="package-count" role="status"></span><div class="button-row"><button class="button small" id="package-clear">Clear filters</button><button class="button small" id="package-export">Export matching JSON</button></div></div>
         <div id="package-list"></div>
         <div class="pagination"><span id="package-page"></span><div class="button-row"><button class="button small" id="package-prev">Previous</button><button class="button small" id="package-next">Next</button></div></div>
       </section>
@@ -283,8 +404,9 @@ const PackagesView = (() => {
       $('package-page').textContent = `Page ${number(result.page + 1)} of ${number(result.pages)}`;
       $('package-prev').disabled = result.page === 0;
       $('package-next').disabled = result.page + 1 >= result.pages;
-      $('package-list').innerHTML = table(['Package / UID', 'Reported type / state', 'Installer', 'APK files', 'Notes', 'Evidence'], result.records.map(pkg => [
+      $('package-list').innerHTML = table(['Package / UID', 'China connection', 'Reported type / state', 'Installer', 'APK files', 'Notes', 'Evidence'], result.records.map(pkg => [
         `${escapeHTML(pkg.name)}<br><span class="tiny">UID ${escapeHTML(pkg.uid ?? 'Not recorded')}</span>`,
+        `${originBadge(pkg.origin, escapeHTML)}<br><span class="tiny">${escapeHTML(pkg.origin.app_name || basisLabels[pkg.origin.basis])}</span>`,
         `${escapeHTML(classification[pkg.classification])}<br><span class="tiny">${pkg.disabled === true ? 'Disabled' : pkg.disabled === false ? 'Not disabled' : 'Disabled state not recorded'}</span>`,
         escapeHTML(pkg.installer ?? 'Not recorded'),
         number(pkg.files.length),
@@ -293,7 +415,8 @@ const PackagesView = (() => {
       ]));
     }
 
-    for (const key of ['query', 'type', 'disabled', 'installer', 'review']) {
+    const filterKeys = ['query', 'type', 'disabled', 'installer', 'review', 'origin'];
+    for (const key of filterKeys) {
       const input = $(`package-${key}`);
       input.value = view.filters[key] || '';
       input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', () => {
@@ -306,8 +429,20 @@ const PackagesView = (() => {
     $('package-next').onclick = () => { view.page++; updateRows(); };
     $('package-clear').onclick = () => {
       view.filters = {}; view.page = 0;
-      for (const key of ['query', 'type', 'disabled', 'installer', 'review']) $(`package-${key}`).value = '';
+      for (const key of filterKeys) $(`package-${key}`).value = '';
       updateRows();
+    };
+    $('package-show-china').onclick = () => {
+      // This overview shortcut intentionally starts a fresh selection.
+      view.filters = { origin: 'china-linked' };
+      view.page = 0;
+      for (const key of filterKeys) $(`package-${key}`).value = view.filters[key] || '';
+      updateRows();
+      $('package-origin').focus();
+    };
+    $('package-export').onclick = () => {
+      const report = PackageAnalysis.filteredReport(summary, view.filters);
+      download(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }), 'packages-filtered.json');
     };
     updateRows();
   }
@@ -319,7 +454,22 @@ const PackagesView = (() => {
     const { $, escapeHTML, number, panel, table } = helpers;
     $('package-title').textContent = pkg.name;
     $('package-meta').textContent = `${summary.source_file} · JSON record ${pkg.evidence}`;
-    $('package-content').innerHTML = panel('Reported package fields', '', table(['Field', 'Value'], [
+    const origin = pkg.origin;
+    $('package-content').innerHTML = panel('China connection evidence', '', `${originBadge(origin, escapeHTML)}
+      <p>${escapeHTML(origin.reason)}</p>
+      ${table(['Field', 'Catalogue evidence'], [
+        ['Current listed app', escapeHTML(origin.app_name || 'Not established')],
+        ['Publisher', escapeHTML(origin.publisher || 'Not established')],
+        ['Publisher country code', escapeHTML(origin.publisher_country || 'Not established')],
+        ['Group', escapeHTML(origin.group || 'Not established')],
+        ['Basis', escapeHTML(basisLabels[origin.basis])],
+        ['Matched package', escapeHTML(origin.matched_package || 'No exact match')],
+        ['Source checked', escapeHTML(origin.checked_at || 'Not reviewed')],
+        ['Catalogue version', escapeHTML(origin.catalogue_version)],
+      ])}
+      ${origin.sources.length ? `<ul class="notes">${sourceLinks(origin, escapeHTML)}</ul>` : ''}
+      <p class="hint">${escapeHTML(summary.origin_catalogue.limitation)}</p>`)
+      + panel('Reported package fields', '', table(['Field', 'Value'], [
       ['UID', escapeHTML(pkg.uid ?? 'Not recorded')],
       ['Installer', escapeHTML(pkg.installer ?? 'Not recorded')],
       ['system', recordedBoolean(pkg.system)],
@@ -347,11 +497,15 @@ const PackagesView = (() => {
     const block = value => String(value ?? '').split('\n').map(line => `    ${line}`).join('\n');
     const lines = ['# Package inventory analysis', '', 'Source:', '', block(summary.source_file), '', `Analysed: ${summary.analyzed_at}`, '', '## Counts', ''];
     for (const [key, count] of Object.entries(summary.counts)) lines.push(`- ${key.replace(/_/g, ' ')}: ${count}`);
+    lines.push('', '## China connection catalogue', '', `Version: ${summary.origin_catalogue.version}; checked: ${summary.origin_catalogue.checked_at}.`, '', summary.origin_catalogue.scope, '', summary.origin_catalogue.limitation);
     lines.push('', '## Interpretation', '', ...summary.notes.map(note => `- ${note}`), '', '## Recorded installers', '');
     for (const [installer, count] of summary.installers) lines.push(block(`${installer ?? 'Not recorded'}: ${count}`), '');
     lines.push('## Package evidence', '');
     for (const pkg of summary.packages) {
       lines.push(`### Record ${pkg.source_index}`, '', block(`${pkg.name}\nSource: ${pkg.evidence}\nUID: ${pkg.uid ?? 'Not recorded'}\nType: ${classification[pkg.classification]}\nDisabled: ${recordedBoolean(pkg.disabled)}\nInstaller: ${pkg.installer ?? 'Not recorded'}`), '');
+      const origin = pkg.origin;
+      lines.push(block(`China connection: ${originLabels[origin.status]}\nBasis: ${basisLabels[origin.basis]}\nPublisher: ${origin.publisher || 'Not established'}\nPublisher country: ${origin.publisher_country || 'Not established'}\nGroup: ${origin.group || 'Not established'}\nReason: ${origin.reason}\nSources checked: ${origin.checked_at || 'Not reviewed'}`), '');
+      for (const source of origin.sources) lines.push(block(`${source.title}: ${source.url}`), '');
       for (const finding of pkg.findings) lines.push(block(`${finding.evidence}: ${finding.detail}`), '');
       for (const file of pkg.files) lines.push(block(`${file.evidence}\nPath: ${file.path ?? 'Not recorded'}\nAPK SHA-256: ${file.sha256 ?? 'Not recorded'}\nCertificate: ${certificateLabels[file.certificate_status]}\nverified_certificate: ${recordedBoolean(file.verified_certificate)}\ntrusted_certificate: ${recordedBoolean(file.trusted_certificate)}\nCollection error: ${file.error ?? 'None reported'}\nCertificate error: ${file.certificate_error ?? 'None reported'}`), '');
     }
@@ -361,6 +515,7 @@ const PackagesView = (() => {
   return { render, showDetails, markdown };
 })();
 
+;
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -376,7 +531,7 @@ const PackagesView = (() => {
   const historyKey = 'android_tools_history_v2';
   let route = 'home', toastTimer = null, queryTimer = null, contextTool = null, contextTarget = 1;
   let contextRequestId = 0;
-  const packageUI = { $, escapeHTML, number, stat, panel, table, notes };
+  const packageUI = { $, escapeHTML, number, stat, panel, table, notes, download };
 
   function toast(message) {
     clearTimeout(toastTimer); $('toast').textContent = message; $('toast').hidden = false;
@@ -416,10 +571,10 @@ const PackagesView = (() => {
       },
       packages: {
         eyebrow: 'PACKAGE INVENTORY', noun: 'packages.json',
-        subtitle: 'Inspect installed-package metadata, APK hashes, installers, and certificate coverage.',
+        subtitle: 'Filter China-linked apps and inspect package metadata, APK hashes, and installers.',
         upload: 'Open an Android package inventory exported as a JSON array.',
         open: 'Each record contains a package name and its APK file metadata. Parsing runs locally.',
-        investigate: 'Filter reported system and third-party packages, disabled state, installers, and missing or inconsistent data.',
+        investigate: 'Review sourced China connections, reported system and third-party packages, installers, and missing data.',
       },
     }[tool];
     const uploadHint = packages
@@ -480,15 +635,15 @@ const PackagesView = (() => {
     state[tool].fileSize = file.size;
     setBusy(tool, true); $(`${tool}-upload`).hidden = true; $(`${tool}-help`).hidden = true;
     $(`${tool}-progress`).textContent = `Opening ${file.name}…`;
-    if (!('Worker' in window)) { failOpen(tool, 'This browser does not support local workers. Open this HTML in a current desktop browser.'); return; }
-    let worker, url;
+    if (!('Worker' in window)) { failOpen(tool, 'This browser does not support analysis workers. Use a current browser.'); return; }
+    let worker;
     try {
-      url = URL.createObjectURL(new Blob([$('analysis-worker').textContent], { type: 'text/javascript' }));
-      worker = new Worker(url); URL.revokeObjectURL(url);
-    } catch (_) { if (url) URL.revokeObjectURL(url); failOpen(tool, 'The browser blocked local analysis. Download this HTML and open it directly in your browser.'); return; }
+      // Relative to the page, including a GitHub Pages repository subpath.
+      worker = new Worker(new URL('analysis-worker.js', document.baseURI));
+    } catch (_) { failOpen(tool, 'The analysis worker could not start. Open the hosted site or use a local HTTP server, with all site files in the same folder.'); return; }
     state[tool].worker = worker;
     worker.onmessage = ({ data }) => { if (state[tool].worker === worker) handleMessage(tool, data); };
-    worker.onerror = event => { event.preventDefault(); if (state[tool].worker === worker) failOpen(tool, 'The local analysis stopped unexpectedly. Try a smaller capture or reopen this HTML in a desktop browser.'); };
+    worker.onerror = event => { event.preventDefault(); if (state[tool].worker === worker) failOpen(tool, 'Analysis stopped unexpectedly. Reload the site and check that analysis-worker.js is deployed beside index.html; for large captures, try a smaller file.'); };
     worker.onmessageerror = () => {
       if (state[tool].worker === worker) failOpen(tool, 'The browser could not receive the analysis result. Reopen the capture to try again.');
     };
@@ -742,7 +897,7 @@ const PackagesView = (() => {
         if (Array.isArray(legacy)) value = legacy.filter(e => e?.summary?.counts && e.summary.battery_diagnosis && e.summary.crash_diagnosis && e.summary.stalkerware_indicators).map(e => ({ ...e, summary: { ...e.summary, tool: 'bugreport', coverage: { sectioned: e.summary.sections_found?.[0] !== 'FULL_TEXT', battery: Boolean(e.summary.wakelocks?.length), packages: Boolean(e.summary.stalkerware_indicators.contributors?.length) }, notes: ['Saved by the previous analyser. Reopen the capture to refresh coverage and run the updated checks.'] } }));
       }
       const valid = Array.isArray(value) ? value.filter(e => e?.summary && typeof e.summary.source_file === 'string' && e.summary.counts && Object.keys(titles).includes(e.summary.tool) && (e.summary.tool !== 'packages' || PackageAnalysis.isSummary(e.summary))) : [];
-      return valid.slice(0, 10);
+      return valid.slice(0, 10).map(entry => entry.summary.tool === 'packages' ? { ...entry, summary: PackageAnalysis.withOrigins(entry.summary) } : entry);
     } catch (_) { return []; }
   }
   function remember(summary) {
