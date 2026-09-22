@@ -37,7 +37,7 @@
       <div class="page-heading"><div><div class="eyebrow">${log ? 'LOGCAT INVESTIGATION' : 'DEVICE DIAGNOSTICS'}</div><h1>${titles[tool]}</h1><p class="subtitle">${log ? 'Find the important events in logcat.txt, then inspect the lines around them.' : 'Review crashes, responsiveness, battery statistics, and app access in one capture.'}</p></div><button class="button" data-demo="${tool}">Try a sample</button></div>
       <div id="${tool}-upload" class="upload-panel" data-drop="${tool}">
         <div class="upload-icon">${icon('upload')}</div><h2>Drop your ${log ? 'logcat file' : 'bugreport'} here</h2><p>${log ? 'Open a saved logcat capture or choose a log file inside a ZIP.' : 'Open a bugreport ZIP or the extracted text report.'}</p>
-        <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose file</button></div><p class="upload-hint">TXT, LOG, ZIP · UP TO 100 MiB / 1 MILLION LINES · PROCESSED LOCALLY</p>
+        <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose file</button></div><p class="upload-hint">TXT, LOG, ZIP · UP TO 150 MiB / 10 MILLION LINES · PROCESSED LOCALLY</p>
         <input id="${tool}-file" type="file" accept=".txt,.log,.zip" hidden aria-label="Choose ${log ? 'logcat' : 'bugreport'} file">
       </div>
       <label class="remember"><input id="${tool}-remember" type="checkbox">Remember analysis summaries in this browser</label>

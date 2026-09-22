@@ -33,7 +33,7 @@
       <button class="nav-item" data-route="logcat"><svg class="icon"><use href="#i-log"/></svg>Log Analyser<span class="nav-dot"></span></button>
     </nav>
     <div class="sidebar-bottom"><svg class="icon"><use href="#i-shield"/></svg><div><strong>On your device</strong><p>Files are analysed in your browser. No upload required.</p></div></div>
-    <div class="version">ANDROID TOOLS <span>02</span></div>
+    <div class="version">ANDROID TOOLS <span>v01</span></div>
   </aside>
   <main id="main" tabindex="-1">
     <header class="topbar"><span id="breadcrumb">Workspace / Overview</span><div class="topbar-actions"><span class="local-status"><span></span> Local analysis</span><button class="button small" id="history-open">History</button></div></header>
@@ -315,17 +315,8 @@ const Logcat = (() => {
   const FRAME_DROP_RE = /Skipped (\d+) frames!\s*The application may be doing too much work/g;
   const TOTAL_BATTERY_RE = /^\s*Time on battery:\s*((?:\d+(?:ms|h|m|s)\s*)+)(?:\(|realtime|$)/mi;
 
-  // ---------------------------------------------------------------------
   // Stalkerware / surveillance-app correlation
-  //
-  // Regexes and lookup tables for parsing dumpsys package/accessibility/
-  // device_policy/deviceidle output and correlating it against publicly
-  // documented consumer-spyware ("stalkerware") indicators: accessibility-
-  // service abuse, device-admin registration, battery-optimization
-  // exemption, sensitive-permission clustering, and known package-name
-  // patterns. See buildStalkerwareCorrelation() below for the important
-  // caveats about false positives.
-  // ---------------------------------------------------------------------
+
   const PKG_HEADER_RE = /^\s*Package \[([\w.]+)\]/;
   const REQ_PERMS_HEADER_RE = /requested permissions:/i;
   const RUNTIME_PERMS_HEADER_RE = /runtime permissions:/i;
@@ -1584,7 +1575,7 @@ function bugReportDetails(text, result, logData) {
   return result;
 }
 
-const MAX_BYTES = 100 * 1024 * 1024;
+const MAX_BYTES = 150 * 1024 * 1024;
 let archive = null, activeFile = null, activeTool = '', logData = null, logFindings = null, report = null;
 let lastProgress = 0;
 function progress(message, force = false) {
@@ -1600,7 +1591,7 @@ async function extractEntry(entry) {
     stream.on('data', chunk => {
       if (failed) return;
       size += chunk.length;
-      if (size > MAX_BYTES) { failed = true; stream.pause(); reject(new Error('The extracted file exceeds the 100 MiB limit. Choose a smaller capture.')); return; }
+      if (size > MAX_BYTES) { failed = true; stream.pause(); reject(new Error('The extracted file exceeds the 150 MiB limit. Choose a smaller capture.')); return; }
       chunks.push(decoder.decode(chunk, { stream: true }));
       progress(`Extracting ${entry.name} · ${(size / 1048576).toFixed(1)} MiB`);
     });
@@ -1644,9 +1635,8 @@ async function runAnalysis(text, source) {
   if (!text.trim()) throw new Error('The selected file has no text to analyse.');
   const sample = text.slice(0, 16000);
   if ((sample.match(/\0/g) || []).length > 5) throw new Error('This does not look like UTF-8 text. Export the capture as UTF-8 .txt and try again.');
-  // Bound object overhead as well as bytes. Never silently analyse only part of a file.
   let lineCount = 1;
-  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10 && ++lineCount > 1000000) throw new Error('This capture exceeds one million lines. Split it into smaller files and analyse each part.');
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10 && ++lineCount > 10000000) throw new Error('This capture exceeds 10 million lines. Split it into smaller files and analyse each part.');
   progress('Parsing log records…', true);
   logData = Logcat.parse(text, progress);
   if (activeTool === 'logcat' && !logData.parsed) throw new Error('No supported logcat records were found. Use threadtime, time, brief, or long format; raw message-only logs have no priority or process fields.');
