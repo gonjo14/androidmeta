@@ -670,6 +670,7 @@ const PackagesView = (() => {
 
   function render(summary, view, helpers) {
     const { $, escapeHTML, number, stat, panel, table, notes, download } = helpers;
+    const installerName = id => id ? (PackageNames.lookup(id)?.name || id) : id;
     const c = summary.counts;
     const certificateNote = c.certificate_metadata === 0
       ? `No certificate metadata is populated in the ${number(c.apk_files)} APK entries.`
@@ -712,7 +713,7 @@ const PackagesView = (() => {
           ['Shared UID groups', number(c.shared_uid_groups)],
           ['System packages with a file in /data/app', number(c.system_packages_in_data_app)],
         ]))}
-        ${panel('Recorded installers', 'Names describe the inventory; they do not establish app trust.', table(['Installer', 'Packages'], summary.installers.map(([name, count]) => [escapeHTML(name ?? 'Not recorded'), number(count)])))}
+        ${panel('Recorded installers', 'Names describe the inventory; they do not establish app trust.', table(['Installer', 'Packages'], summary.installers.map(([name, count]) => [escapeHTML(installerName(name) ?? 'Not recorded'), number(count)])))}
       </div>
       <section class="panel">
         <h2>Package explorer</h2>
@@ -721,7 +722,7 @@ const PackagesView = (() => {
           <div class="field"><label for="package-origin">Publisher / China connection</label><select id="package-origin"><option value="">All packages</option><option value="china-linked">Documented China links</option><option value="china-publisher">Publisher based in China only</option><option value="needs-review">Needs review</option><option value="publisher-recorded">Other publisher listings</option><option value="publisher-hint">Namespace hints · country unverified</option><option value="unclassified">Unclassified · no match or hint</option><option value="exclude-china-linked">Exclude documented matches</option></select></div>
           <div class="field"><label for="package-type">Reported type</label><select id="package-type"><option value="">All types</option><option value="system">System</option><option value="third-party">Third-party</option><option value="unknown">Unknown</option><option value="conflicting">Conflicting</option></select></div>
           <div class="field"><label for="package-disabled">Reported state</label><select id="package-disabled"><option value="">All states</option><option value="false">Not disabled</option><option value="true">Disabled</option><option value="unknown">Not recorded</option></select></div>
-          <div class="field"><label for="package-installer">Installer</label><select id="package-installer"><option value="">All installers</option>${summary.installers.filter(([name]) => name !== null).map(([name]) => `<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join('')}</select></div>
+          <div class="field"><label for="package-installer">Installer</label><select id="package-installer"><option value="">All installers</option>${summary.installers.filter(([name]) => name !== null).map(([name]) => `<option value="${escapeHTML(name)}">${escapeHTML(installerName(name))}</option>`).join('')}</select></div>
           <div class="field"><label for="package-review">Evidence filter</label><select id="package-review"><option value="">All packages</option><option value="third-party-missing-installer">Third-party; installer not recorded</option><option value="missing-installer">Any type; installer not recorded</option><option value="findings">Has review notes</option><option value="missing-name">App name not recorded</option><option value="data-errors">Data errors reported</option><option value="certificate-unknown">Has an APK with unknown verification</option></select></div>
           <div class="field"><label for="package-layout">APK layout</label><select id="package-layout"><option value="">All layouts</option><option value="multiple">Multiple APK files</option><option value="split">Split filenames detected</option><option value="single">One APK file</option><option value="unclassified">Contains unclassified files</option><option value="empty">No APK files</option></select></div>
         </div>
@@ -742,7 +743,7 @@ const PackagesView = (() => {
         `<strong class="package-name">${escapeHTML(pkg.display_name)}</strong>${pkg.display_name !== pkg.name ? `<code class="package-id">${escapeHTML(pkg.name)}</code>` : ''}<span class="tiny">${escapeHTML(nameSources[pkg.display_name_source])}<br>UID ${escapeHTML(pkg.uid ?? 'Not recorded')}</span>`,
         `${originBadge(pkg.origin, escapeHTML)}<br><span class="tiny">${escapeHTML(pkg.origin.publisher_hint || pkg.origin.app_name || basisLabels[pkg.origin.basis])}</span>`,
         `${escapeHTML(classification[pkg.classification])}<br><span class="tiny">${pkg.disabled === true ? 'Disabled' : pkg.disabled === false ? 'Not disabled' : 'Disabled state not recorded'}</span>`,
-        escapeHTML(pkg.installer ?? 'Not recorded'),
+        escapeHTML(installerName(pkg.installer) ?? 'Not recorded'),
         apkBreakdown(pkg, escapeHTML, number),
         `<button class="button small" data-package="${pkg.source_index}">Inspect record</button>`,
       ]));
@@ -837,7 +838,7 @@ const PackagesView = (() => {
       <p class="hint">${escapeHTML(summary.origin_catalogue.limitation)}</p>`)
       + panel('Reported package fields', '', table(['Field', 'Value'], [
       ['UID', escapeHTML(pkg.uid ?? 'Not recorded')],
-      ['Installer', escapeHTML(pkg.installer ?? 'Not recorded')],
+      ['Installer', escapeHTML(installerName(pkg.installer) ?? 'Not recorded')],
       ['system', recordedBoolean(pkg.system)],
       ['third_party', recordedBoolean(pkg.third_party)],
       ['disabled', recordedBoolean(pkg.disabled)],
@@ -869,7 +870,7 @@ const PackagesView = (() => {
     for (const [installer, count] of summary.installers) lines.push(block(`${installer ?? 'Not recorded'}: ${count}`), '');
     lines.push('## Package evidence', '');
     for (const pkg of summary.packages) {
-      lines.push(`### Record ${pkg.source_index}`, '', block(`${pkg.name}\nSource: ${pkg.evidence}\nUID: ${pkg.uid ?? 'Not recorded'}\nType: ${classification[pkg.classification]}\nDisabled: ${recordedBoolean(pkg.disabled)}\nInstaller: ${pkg.installer ?? 'Not recorded'}`), '');
+      lines.push(`### Record ${pkg.source_index}`, '', block(`${pkg.name}\nSource: ${pkg.evidence}\nUID: ${pkg.uid ?? 'Not recorded'}\nType: ${classification[pkg.classification]}\nDisabled: ${recordedBoolean(pkg.disabled)}\nInstaller: ${installerName(pkg.installer) ?? 'Not recorded'}`), '');
       lines.push(block(`Display name: ${pkg.display_name}\nName source: ${nameSources[pkg.display_name_source]}\n${versionText(pkg).join('\n')}\nAPK files: ${pkg.files.length} (${pkg.apk_group.summary})\n${pkg.apk_group.explanation}\n${pkg.apk_group.note}`), '');
       for (const [key, field] of Object.entries(pkg.metadata)) if (field) lines.push(block(`${key}: ${field.value}\nSource: ${field.source_file} · ${field.evidence}`), '');
       if (pkg.name_evidence) lines.push(block(`Catalogue app name: ${pkg.name_evidence.name}\nExact package: ${pkg.name_evidence.matched_package}\nSource: ${pkg.name_evidence.source_url || pkg.name_evidence.source_title}\nChecked: ${pkg.name_evidence.checked_at || 'Not recorded'}`), '');  
