@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
 const scope = vm.createContext({ Intl });
 vm.runInContext(app.slice(0, app.indexOf('// PackageAnalysis is loaded')) + '\n'
+  + fs.readFileSync(path.join(root, 'package-names.js'), 'utf8') + '\n'
   + fs.readFileSync(path.join(root, 'package-analysis.js'), 'utf8') + '\nglobalThis.api = PackageAnalysis;', scope);
 const api = scope.api;
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -25,6 +26,61 @@ test('base, CPU, language, density and feature APKs stay in one package', () => 
   assert.equal(report.packages[0].files[1].evidence, '$[0].files[1]');
   assert.equal(report.packages[0].files[1].sha256, 'a'.repeat(64));
 });
+test('expanded name coverage uses exact IDs without changing publisher-country evidence', () => {
+  const ids = ['com.instagram.android', 'com.dalailama.dalailamaofficial', 'com.canarabank.mobility', 'com.phonepe.app', 'com.fsn.nykaa', 'com.popularapp.periodcalendar', 'com.google.android.safetycore', 'com.evamall.evacustomer'];
+  const s = analyse(ids.map(id => record(id)));
+  for (const pkg of s.packages) {
+    assert.equal(pkg.display_name_source, 'catalogue');
+    assert.notEqual(pkg.display_name, pkg.name);
+    assert.equal(pkg.name_evidence.matched_package, pkg.name);
+    assert.match(pkg.name_evidence.source_url, /^https:\/\//);
+  }
+  const phonepe = s.packages.find(p => p.name === 'com.phonepe.app');
+  assert.equal(phonepe.origin.publisher_country, null);
+  assert.equal(phonepe.origin.status, 'unclassified');
+  assert.equal(phonepe.name_evidence.scope, 'app-name-only');
+  const unknown = analyse([record('com.phonepe.app.clone')]).packages[0];
+  assert.equal(unknown.display_name_source, 'package-id');
+  const supplied = analyse([record('com.phonepe.app', [], {label:'Label from my device'})]).packages[0];
+  assert.equal(supplied.display_name, 'Label from my device');
+  assert.equal(supplied.display_name_source, 'inventory');
+});
+
+test('missing-name templates preserve record identity and round-trip through metadata import', () => {
+  const s = analyse([
+    record('com.phonepe.app'),
+    record('com.example.custom', ['base.apk'], {uid:10001}),
+    record('com.example.custom', ['base.apk'], {uid:1010001}),
+  ]);
+  assert.equal(s.counts.names_unmatched, 2);
+  assert.equal(api.page(s.packages, {review:'missing-name'}).total, 2);
+  const template = plain(api.missingNameTemplate(s));
+  assert.equal(template.packages.length, 2);
+  assert.deepEqual(Object.keys(template.packages[0]), ['name', 'uid', 'label']);
+  assert.equal(template.packages[0].label, null);
+  template.packages[0].label = 'Work app';
+  template.packages[1].label = 'Personal app';
+  const imported = api.enrich(s, JSON.stringify(template), 'completed-labels.json');
+  assert.equal(imported.counts.names_unmatched, 0);
+  assert.equal(imported.packages[1].display_name, 'Work app');
+  assert.equal(imported.packages[2].display_name, 'Personal app');
+  assert.equal(imported.packages[1].files.length, 1);
+  assert.equal(imported.packages[1].metadata.label.source_file, 'completed-labels.json');
+});
+
+test('saved reports refresh new names while retaining source capture and export provenance', () => {
+  const original = plain(analyse([record('com.canarabank.mobility')]));
+  original.packages[0].display_name = 'com.canarabank.mobility';
+  original.packages[0].display_name_source = 'package-id';
+  delete original.packages[0].name_evidence;
+  const refreshed = api.withOrigins(original);
+  assert.notEqual(refreshed.packages[0].display_name, 'com.canarabank.mobility');
+  assert.equal(refreshed.source_file, original.source_file);
+  assert.equal(refreshed.analyzed_at, original.analyzed_at);
+  const exported = api.filteredReport(refreshed);
+  assert.equal(exported.packages[0].name_evidence.matched_package, 'com.canarabank.mobility');
+  assert.equal(exported.name_catalogue.rule_count, refreshed.name_catalogue.rule_count);
+ });
 
 test('manufacturer filenames require a matching base in the same folder', () => {
   const p = analyse([record('com.example.app', ['Example.apk', 'Example-arm64_v8a.apk', 'Example-xxxhdpi.apk'])]).packages[0];

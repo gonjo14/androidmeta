@@ -1,10 +1,10 @@
 'use strict';
 // Shared by the UI and worker. The build includes this file in both contexts.
 const AnalysisConfig = Object.freeze({
-  ASSET_VERSION: '0.5.2',
-  MAX_FILE_BYTES: 150 * 1024 * 1024,
-  FILE_LIMIT_LABEL: '150 MiB',
-  MAX_LINES: 10_000_000,
+  ASSET_VERSION: '0.5.4',
+  MAX_FILE_BYTES: 350 * 1024 * 1024,
+  FILE_LIMIT_LABEL: '350 MiB',
+  MAX_LINES: 20_000_000,
   MAX_ARCHIVE_ENTRIES: 1_000,
   PAGE_SIZE: 100,
   QUERY_DEBOUNCE_MS: 180,
@@ -657,8 +657,8 @@ const PackagesView = (() => {
       <p class="hint">${escapeHTML(group.note)}</p></details>`;
   }
   const originLabels = { 'china-linked': 'China-linked · documented', 'needs-review': 'Needs review', 'publisher-recorded': 'Listed publisher · country recorded', 'publisher-hint': 'Namespace hint · country unverified', unclassified: 'Unclassified' };
-  const basisLabels = { 'china-publisher': 'Publisher based in China', 'china-operating-group': 'Group operations in China', 'listed-publisher': 'Exact-ID publisher listing', 'publisher-namespace': 'Publisher namespace inference', 'platform-namespace': 'Reported system package with platform namespace', unresolved: 'Ownership or mapping unresolved', 'not-in-catalogue': 'No catalogue rule' };
-
+  const basisLabels = { 'china-publisher': 'Publisher based in China', 'china-operating-group': 'Group operations in China', 'listed-publisher': 'Exact-ID publisher listing', 'publisher-namespace': 'Publisher namespace inference', 'platform-namespace': 'Reported system package with platform namespace', unresolved: 'Ownership or mapping unresolved', 'not-in-catalogue': 'No publisher-country rule' };
+  
   function originBadge(origin, escapeHTML) {
     const tone = origin.status === 'china-linked' ? 'linked' : origin.status === 'needs-review' ? 'warn' : 'neutral';
     return `<span class="badge ${tone}">${escapeHTML(originLabels[origin.status])}</span>`;
@@ -683,9 +683,10 @@ const PackagesView = (() => {
       </div>
       <section class="panel package-metadata-panel">
         <h2>App names and versions</h2>
-        <p>${number(c.labels_recorded)} of ${number(c.packages)} packages have a recorded app label. ${number(c.catalogue_names)} use a catalogue name as a fallback. Package IDs remain visible.</p>
+        <p>${number(c.labels_recorded)} of ${number(c.packages)} packages have a recorded app label. ${number(c.catalogue_names)} use an exact catalogue name; ${number(c.names_unmatched)} still need a name. Package IDs remain visible.</p>
+        <p class="hint">App-name matches and publisher-country evidence have separate coverage. A known app can still have an unclassified publisher.</p>
         <p class="hint">Add metadata from the same device and capture: a JSON export with app labels and versions, or a dumpsys package text file for versions. Existing values are kept when sources disagree. Dumpsys often does not contain readable app labels.</p>
-        <div class="button-row"><button class="button" id="package-add-metadata">Add app details</button><span class="tiny">JSON or TXT · processed locally</span></div>
+        <div class="button-row"><button class="button" id="package-add-metadata">Add app details</button><button class="button" id="package-show-missing-names">Show unnamed packages</button><button class="button" id="package-export-missing-names">Export missing names</button><span class="tiny">JSON or TXT · processed locally</span></div>
         <input id="package-metadata-file" type="file" accept=".json,.txt" hidden aria-label="Choose app labels and versions">
         <p id="package-metadata-status" class="hint" role="status">${summary.metadata_import ? escapeHTML(`${summary.metadata_import.source_file}: details added to ${summary.metadata_import.updated_packages} packages; ${summary.metadata_import.unmatched_records} unmatched records; ${summary.metadata_import.conflict_fields} conflicting fields; ${summary.metadata_import.ambiguous_packages} ambiguous package matches skipped.`) : 'No additional metadata file loaded.'}</p>
       </section>
@@ -721,7 +722,7 @@ const PackagesView = (() => {
           <div class="field"><label for="package-type">Reported type</label><select id="package-type"><option value="">All types</option><option value="system">System</option><option value="third-party">Third-party</option><option value="unknown">Unknown</option><option value="conflicting">Conflicting</option></select></div>
           <div class="field"><label for="package-disabled">Reported state</label><select id="package-disabled"><option value="">All states</option><option value="false">Not disabled</option><option value="true">Disabled</option><option value="unknown">Not recorded</option></select></div>
           <div class="field"><label for="package-installer">Installer</label><select id="package-installer"><option value="">All installers</option>${summary.installers.filter(([name]) => name !== null).map(([name]) => `<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join('')}</select></div>
-          <div class="field"><label for="package-review">Evidence filter</label><select id="package-review"><option value="">All packages</option><option value="third-party-missing-installer">Third-party; installer not recorded</option><option value="missing-installer">Any type; installer not recorded</option><option value="findings">Has review notes</option><option value="data-errors">Data errors reported</option><option value="certificate-unknown">Has an APK with unknown verification</option></select></div>
+          <div class="field"><label for="package-review">Evidence filter</label><select id="package-review"><option value="">All packages</option><option value="third-party-missing-installer">Third-party; installer not recorded</option><option value="missing-installer">Any type; installer not recorded</option><option value="findings">Has review notes</option><option value="missing-name">App name not recorded</option><option value="data-errors">Data errors reported</option><option value="certificate-unknown">Has an APK with unknown verification</option></select></div>
           <div class="field"><label for="package-layout">APK layout</label><select id="package-layout"><option value="">All layouts</option><option value="multiple">Multiple APK files</option><option value="split">Split filenames detected</option><option value="single">One APK file</option><option value="unclassified">Contains unclassified files</option><option value="empty">No APK files</option></select></div>
         </div>
         <div class="filter-footer"><span id="package-count" role="status"></span><div class="button-row"><button class="button small" id="package-clear">Clear filters</button><button class="button small" id="package-export">Export matching JSON</button></div></div>
@@ -745,7 +746,19 @@ const PackagesView = (() => {
         apkBreakdown(pkg, escapeHTML, number),
         `<button class="button small" data-package="${pkg.source_index}">Inspect record</button>`,
       ]));
-    }
+    };
+    $('package-show-missing-names').disabled = c.names_unmatched === 0;
+    $('package-export-missing-names').disabled = c.names_unmatched === 0;
+    $('package-show-missing-names').onclick = () => {
+      view.filters = { review: 'missing-name' }; view.page = 0;
+      for (const key of filterKeys) $(`package-${key}`).value = view.filters[key] || '';
+      updateRows();
+      $('package-review').focus();
+    };
+    $('package-export-missing-names').onclick = () => {
+      const template = PackageAnalysis.missingNameTemplate(summary);
+      download(new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' }), 'package-labels-to-complete.json');
+    };
 
     $('package-add-metadata').onclick = () => $('package-metadata-file').click();
     $('package-metadata-file').onchange = event => {
@@ -800,6 +813,7 @@ const PackagesView = (() => {
     $('package-content').innerHTML = panel('App identity', nameSources[pkg.display_name_source], table(['Field', 'Value', 'Source'], [
       ['Package ID', escapeHTML(pkg.name), escapeHTML(`${summary.source_file} · ${pkg.evidence}.name`)],
       ['App label', escapeHTML(pkg.metadata.label?.value || 'Not recorded'), escapeHTML(provenance(pkg.metadata.label))],
+      ...(pkg.name_evidence ? [['Catalogue app name', escapeHTML(pkg.name_evidence.name), `${pkg.name_evidence.source_url && /^https:\/\//.test(pkg.name_evidence.source_url) ? `<a href="${escapeHTML(pkg.name_evidence.source_url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(pkg.name_evidence.source_title)}</a>` : escapeHTML(pkg.name_evidence.source_title)}<br><span class="tiny">Exact package-ID match · checked ${escapeHTML(pkg.name_evidence.checked_at || 'Date not recorded')}</span>`]] : []),
       ['Version name', escapeHTML(pkg.metadata.version_name?.value ?? 'Not recorded'), escapeHTML(provenance(pkg.metadata.version_name))],
       ['Version code', escapeHTML(pkg.metadata.version_code?.value ?? 'Not recorded'), escapeHTML(provenance(pkg.metadata.version_code))],
     ]) + (pkg.metadata_conflicts?.length ? `<details><summary>${number(pkg.metadata_conflicts.length)} conflicting metadata fields · existing values retained</summary><pre>${escapeHTML(JSON.stringify(pkg.metadata_conflicts, null, 2))}</pre></details>` : ''))
@@ -850,6 +864,7 @@ const PackagesView = (() => {
     const lines = ['# Package inventory analysis', '', 'Source:', '', block(summary.source_file), '', `Analysed: ${summary.analyzed_at}`, '', '## Counts', ''];
     for (const [key, count] of Object.entries(summary.counts)) lines.push(`- ${key.replace(/_/g, ' ')}: ${count}`);
     lines.push('', '## China connection catalogue', '', `Version: ${summary.origin_catalogue.version}; checked: ${summary.origin_catalogue.checked_at}.`, '', summary.origin_catalogue.scope, '', summary.origin_catalogue.limitation);
+    if (summary.name_catalogue) lines.push('', '## App name catalogue', '', `Version: ${summary.name_catalogue.version}; checked: ${summary.name_catalogue.checked_at}; ${summary.name_catalogue.rule_count} dedicated name rules.`, '', summary.name_catalogue.scope, '', summary.name_catalogue.limitation);    
     lines.push('', '## Interpretation', '', ...summary.notes.map(note => `- ${note}`), '', '## Recorded installers', '');
     for (const [installer, count] of summary.installers) lines.push(block(`${installer ?? 'Not recorded'}: ${count}`), '');
     lines.push('## Package evidence', '');
@@ -857,6 +872,7 @@ const PackagesView = (() => {
       lines.push(`### Record ${pkg.source_index}`, '', block(`${pkg.name}\nSource: ${pkg.evidence}\nUID: ${pkg.uid ?? 'Not recorded'}\nType: ${classification[pkg.classification]}\nDisabled: ${recordedBoolean(pkg.disabled)}\nInstaller: ${pkg.installer ?? 'Not recorded'}`), '');
       lines.push(block(`Display name: ${pkg.display_name}\nName source: ${nameSources[pkg.display_name_source]}\n${versionText(pkg).join('\n')}\nAPK files: ${pkg.files.length} (${pkg.apk_group.summary})\n${pkg.apk_group.explanation}\n${pkg.apk_group.note}`), '');
       for (const [key, field] of Object.entries(pkg.metadata)) if (field) lines.push(block(`${key}: ${field.value}\nSource: ${field.source_file} · ${field.evidence}`), '');
+      if (pkg.name_evidence) lines.push(block(`Catalogue app name: ${pkg.name_evidence.name}\nExact package: ${pkg.name_evidence.matched_package}\nSource: ${pkg.name_evidence.source_url || pkg.name_evidence.source_title}\nChecked: ${pkg.name_evidence.checked_at || 'Not recorded'}`), '');  
       if (pkg.metadata_conflicts?.length) lines.push(block(`Metadata conflicts (existing values retained):\n${JSON.stringify(pkg.metadata_conflicts, null, 2)}`), '');
       for (const file of pkg.files) lines.push(block(`${file.apk.filename}: ${file.apk.label} (filename inference)`), '');
       const origin = pkg.origin;

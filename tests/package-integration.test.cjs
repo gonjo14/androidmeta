@@ -25,13 +25,14 @@ test('worker reads the shared analyser, imports metadata, and reports malformed 
   assert.equal(imported.packages[0].display_name,'Reader');
 });
 
-test('package view renders escaped names, versions and APK details, filters, and exports', () => {
+test('package view renders escaped names, versions and APK details, filters, and exports', async () => {
   const app = fs.readFileSync(path.join(root,'app.js'),'utf8');
   const viewStart = app.indexOf('const PackagesView = (() => {');
   const viewEnd = app.indexOf('\n})();',viewStart) + '\n})();'.length;
   const scope = vm.createContext({Intl,Blob});
   const escapeLine = app.split('\n').find(line=>line.trimStart().startsWith('const escapeHTML ='));
-  vm.runInContext(app.slice(0,app.indexOf('// PackageAnalysis is loaded'))+'\n'+fs.readFileSync(path.join(root,'package-analysis.js'),'utf8')+'\n'+app.slice(viewStart,viewEnd)+'\n'+escapeLine+'\nglobalThis.api=PackageAnalysis;globalThis.view=PackagesView;globalThis.escapeHTML=escapeHTML;',scope);
+  vm.runInContext(app.slice(0,app.indexOf('// PackageAnalysis is loaded'))+'\n'+fs.readFileSync(path.join(root,'package-names.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'package-analysis.js'),'utf8')+'\n'+app.slice(viewStart,viewEnd)+'\n'+escapeLine+'\nglobalThis.api=PackageAnalysis;globalThis.view=PackagesView;globalThis.escapeHTML=escapeHTML;',scope);
+   
   const summary=scope.api.analyse(JSON.stringify([
     {name:'com.example.reader',label:'<img src=x onerror=alert(1)>',versionName:'1.2',versionCode:12,files:[{path:'/data/app/base.apk'},{path:'/data/app/split_config.en.apk'}]},
     {name:'com.example.other',files:[{path:'/system/Other.apk'}]}
@@ -63,13 +64,24 @@ test('package view renders escaped names, versions and APK details, filters, and
   const markdown=scope.view.markdown(summary);
   assert.match(markdown,/1 base \+ 1 split/);
   assert.match(markdown,/version_name: 1\.2/);
+
+  $('package-show-missing-names').onclick();
+  assert.equal($('package-count').textContent,'1 matching packages');
+  assert.match($('package-list').innerHTML,/com\.example\.other/);
+  $('package-export-missing-names').onclick();
+  const template=JSON.parse(await exported.text());
+  assert.equal(template.packages.length,1);
+  assert.equal(template.packages[0].name,'com.example.other');
+  assert.equal(template.packages[0].label,null);
 });
 
 test('HTML loads the shared analyser before the UI with matching asset versions',()=>{
   const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
   const sources=[...html.matchAll(/<script src="([^\"]+)"/g)].map(m=>m[1]);
-  assert.equal(sources[0],'package-analysis.js?v=0.5.2');
-  assert.equal(sources[1],'app.js?v=0.5.2');
+
+  assert.equal(sources[0],'package-names.js?v=0.5.4');
+  assert.equal(sources[1],'package-analysis.js?v=0.5.4');
+  assert.equal(sources[2],'app.js?v=0.5.4');
   for(const src of sources) assert.ok(fs.existsSync(path.join(root,src.split('?')[0])));
   assert.match(fs.readFileSync(path.join(root,'analysis-worker.js'),'utf8'),/importScripts\('package-analysis.js\?v=0\.5\.2'\)/);
 });

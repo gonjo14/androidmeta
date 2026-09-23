@@ -254,21 +254,24 @@ const PackageAnalysis = (() => {
   function withOrigins(summary) {
     const packages = summary.packages.map(pkg => {
       const origin = PackageOrigins.lookup(pkg.name, pkg);
+      const nameEvidence = PackageNames.lookup(pkg.name, origin);
       const fields = pkg.metadata || { label: null, version_name: null, version_code: null };
       const label = fields.label?.value;
       return { ...pkg, ...groupFiles(pkg.files), metadata: fields, origin,
-        display_name: label || origin.app_name || pkg.name,
-        display_name_source: label ? fields.label.kind : origin.app_name ? 'catalogue' : 'package-id',
+        display_name: label || nameEvidence?.name || pkg.name,
+        display_name_source: label ? fields.label.kind : nameEvidence ? 'catalogue' : 'package-id',
+        name_evidence: nameEvidence,
       };
     });
     const counts = { ...summary.counts, china_linked: 0, china_publisher: 0, origin_needs_review: 0, origin_publisher_recorded: 0, origin_publisher_hint: 0, origin_unclassified: 0,
-      multi_file_packages: 0, split_packages: 0, apk_splits: 0, labels_recorded: 0, catalogue_names: 0, version_names_recorded: 0, version_codes_recorded: 0 };
-    for (const pkg of packages) {
+      multi_file_packages: 0, split_packages: 0, apk_splits: 0, labels_recorded: 0, catalogue_names: 0, names_unmatched: 0, version_names_recorded: 0, version_codes_recorded: 0 };     
+      for (const pkg of packages) {
       if (pkg.files.length > 1) counts.multi_file_packages++;
       if (pkg.apk_group.status === 'split') counts.split_packages++;
       counts.apk_splits += pkg.apk_group.split_count;
       if (pkg.metadata.label) counts.labels_recorded++;
       if (pkg.display_name_source === 'catalogue') counts.catalogue_names++;
+      if (pkg.display_name_source === 'package-id') counts.names_unmatched++;
       if (pkg.metadata.version_name) counts.version_names_recorded++;
       if (pkg.metadata.version_code) counts.version_codes_recorded++;
       if (pkg.origin.status === 'china-linked') counts.china_linked++;
@@ -279,7 +282,7 @@ const PackageAnalysis = (() => {
       if (pkg.origin.status === 'unclassified') counts.origin_unclassified++;
     }
     const notes = summary.notes.map(note => note.replace('Permissions, accessibility status, version numbers, install times, and behaviour are not available in this schema.', 'Permissions, accessibility status, install times, and behaviour are not available in this schema.'));
-    return { ...summary, version: VERSION, packages, counts, notes, origin_catalogue: PackageOrigins.metadata() };
+    return { ...summary, version: VERSION, packages, counts, notes, origin_catalogue: PackageOrigins.metadata(), name_catalogue: PackageNames.metadata() };
   }
 
   function matches(pkg, filters = {}) {
@@ -297,6 +300,7 @@ const PackageAnalysis = (() => {
     if (filters.review === 'findings' && !pkg.findings.length) return false;
     if (filters.review === 'data-errors' && !pkg.findings.some(finding => finding.level === 'review')) return false;
     if (filters.review === 'certificate-unknown' && !pkg.files.some(file => file.certificate_status === 'unknown')) return false;
+    if (filters.review === 'missing-name' && pkg.display_name_source !== 'package-id') return false;
     if (filters.layout === 'multiple' && pkg.files.length < 2) return false;
     if (filters.layout === 'split' && pkg.apk_group?.status !== 'split') return false;
     if (filters.layout === 'single' && pkg.files.length !== 1) return false;
@@ -329,7 +333,8 @@ const PackageAnalysis = (() => {
       tool: 'packages-filtered', version: 2, source_file: summary.source_file,
       analyzed_at: summary.analyzed_at, exported_at: new Date().toISOString(),
       inventory_packages: summary.packages.length, matching_packages: packages.length,
-      filters: selection, origin_catalogue: summary.origin_catalogue, metadata_import: summary.metadata_import || null,
+      filters: selection, origin_catalogue: summary.origin_catalogue, name_catalogue: summary.name_catalogue, metadata_import: summary.metadata_import || null,
+       
       notes: summary.notes, packages,
     };
   }
@@ -433,5 +438,14 @@ const PackageAnalysis = (() => {
     return withOrigins({ ...summary, packages, metadata_import: info });
   }
 
-  return { analyse, matches, page, isSummary, withOrigins, filteredReport, parseMetadata, enrich };
+  function missingNameTemplate(summary) {
+    return {
+      tool: 'package-label-template', version: 1,
+      instructions: 'Fill label with a verified app name, leaving unresolved labels null. Import this JSON using Add app details. Package IDs and UIDs identify the original records; no APK hashes or paths are included.',
+      packages: summary.packages.filter(pkg => pkg.display_name_source === 'package-id')
+        .map(pkg => ({ name: pkg.name, ...(pkg.uid == null ? {} : { uid: pkg.uid }), label: null })),
+    };
+  }
+
+  return { analyse, matches, page, isSummary, withOrigins, filteredReport, parseMetadata, enrich, missingNameTemplate };
 })();
