@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<meta name="description" content="Local Android bugreport, logcat, and package inventory analysis. Inspect crashes, battery statistics, and APK metadata in your browser.">
+<meta name="description" content="Local Android bugreport, logcat, package inventory, and settings analysis. Inspect captures in your browser.">
 <title>Android Tools</title>
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -32,9 +32,10 @@
       <button class="nav-item" data-route="bugreport"><svg class="icon"><use href="#i-bug"/></svg>Bug Report Analyser</button>
       <button class="nav-item" data-route="logcat"><svg class="icon"><use href="#i-log"/></svg>Log Analyser<span class="nav-dot"></span></button>
       <button class="nav-item" data-route="packages"><svg class="icon"><use href="#i-grid"/></svg>Package Analyser</button>
+      <button class="nav-item" data-route="settings"><svg class="icon"><use href="#i-settings"/></svg>Settings Analyser</button>
     </nav>
     <div class="sidebar-bottom"><svg class="icon"><use href="#i-shield"/></svg><div><strong>On your device</strong><p>Files are analysed in your browser. No upload required.</p></div></div>
-    <div class="version">ANDROID TOOLS <span>v0.3</span></div>
+    <div class="version">ANDROID TOOLS <span>v0.4</span></div>
   </aside>
   <main id="main" tabindex="-1">
     <header class="topbar"><span id="breadcrumb">Workspace / Overview</span><div class="topbar-actions"><span class="local-status"><span></span> Local analysis</span><button class="button small" id="history-open">History</button></div></header>
@@ -49,20 +50,22 @@
         <button class="tool-card" data-route="packages"><span class="tool-icon"><svg class="icon"><use href="#i-grid"/></svg></span><span class="tool-name">Package Analyser <svg class="icon"><use href="#i-arrow"/></svg></span><span class="tool-description">Filter China-linked apps, review publisher evidence, and inspect APK hashes and installers.</span><span class="tool-footer">.JSON <span>Open analyser</span></span></button>
         <div class="tool-card unavailable"><span class="tool-icon"><svg class="icon"><use href="#i-battery"/></svg></span>
           <span class="tool-name">Battery Analyser <span class="badge neutral">Coming soon</span></span><span class="tool-description">Battery and wakelock checks are currently available inside Bug Report Analyser.</span></div>
-        <div class="tool-card unavailable"><span class="tool-icon"><svg class="icon"><use href="#i-settings"/></svg></span>
-          <span class="tool-name">Settings <span class="badge neutral">Coming soon</span></span><span class="tool-description">Use the controls in each analyser to filter results and manage saved summaries.</span></div>
+        <button class="tool-card" data-route="settings"><span class="tool-icon"><svg class="icon"><use href="#i-settings"/></svg></span>
+          <span class="tool-name">Settings Analyser <svg class="icon"><use href="#i-arrow"/></svg></span><span class="tool-description">Explore global, secure, and system settings with recorded values, explanations, and source lines.</span><span class="tool-footer">.TXT <span>Open analyser</span></span></button>
       </div>
       <div class="home-note"><svg class="icon"><use href="#i-shield"/></svg><span><strong>Private by default.</strong> Analysis runs in your browser. Your capture stays on your device.</span><span class="mono">NO ACCOUNT NEEDED</span></div>
     </section>
     <section id="bugreport" class="page" hidden></section>
     <section id="logcat" class="page" hidden></section>
     <section id="packages" class="page" hidden></section>
+    <section id="settings" class="page" hidden></section>
     <footer class="app-footer"><span>Android Tools · Local diagnostics</span><span>Evidence first. Context always.</span></footer>
   </main>
 </div>
 <dialog id="context-dialog" aria-labelledby="context-title"><div class="dialog-head"><div><div class="eyebrow">SOURCE CONTEXT</div><h2 id="context-title">Log context</h2></div><button class="button" data-close="context-dialog">Close</button></div><p id="context-meta" class="muted"></p><div id="context-content" class="source-lines"></div><div class="dialog-foot"><button class="button" id="context-before">Earlier lines</button><button class="button" id="context-after">Later lines</button></div></dialog>
-<dialog id="history-dialog" aria-labelledby="history-title"><div class="dialog-head"><div><div class="eyebrow">THIS BROWSER</div><h2 id="history-title">Saved analyses</h2></div><button class="button" data-close="history-dialog">Close</button></div><p class="muted">Only summaries you choose to remember are saved. They may include log excerpts. Reopen the source file to explore its raw lines.</p><div id="history-list"></div><div class="dialog-foot"><button class="button danger" id="history-clear">Clear saved history</button></div></dialog>
+<dialog id="history-dialog" aria-labelledby="history-title"><div class="dialog-head"><div><div class="eyebrow">THIS BROWSER</div><h2 id="history-title">Saved analyses</h2></div><button class="button" data-close="history-dialog">Close</button></div><p class="muted">Only summaries you choose to remember are saved. They may include log excerpts, raw settings, and identifiers. Reopen source files to explore raw log lines or combine settings exports.</p><div id="history-list"></div><div class="dialog-foot"><button class="button danger" id="history-clear">Clear saved history</button></div></dialog>
 <dialog id="package-dialog" aria-labelledby="package-title"><div class="dialog-head"><div><div class="eyebrow">PACKAGE EVIDENCE</div><h2 id="package-title">Package details</h2></div><button class="button" data-close="package-dialog">Close</button></div><p id="package-meta" class="muted"></p><div id="package-content"></div></dialog>
+<dialog id="setting-dialog" aria-labelledby="setting-title"><div class="dialog-head"><div><div class="eyebrow">SETTINGS EVIDENCE</div><h2 id="setting-title">Setting details</h2></div><button class="button" data-close="setting-dialog">Close</button></div><p id="setting-meta" class="muted"></p><div id="setting-content"></div></dialog>
 <div id="toast" role="status" hidden></div>
 <noscript>
   <div class="noscript">Enable JavaScript to analyse files locally.</div></noscript>

@@ -16,6 +16,12 @@ const AnalysisConfig = Object.freeze({
   MAX_PACKAGES: 10_000,
   MAX_PACKAGE_FILES: 100_000,
   PACKAGE_PAGE_SIZE: 50,
+  MAX_SETTINGS_BYTES: 2 * 1024 * 1024,
+  SETTINGS_LIMIT_LABEL: '2 MiB per file',
+  MAX_SETTINGS_RECORDS: 20_000,
+  MAX_SETTINGS_LINES: 25_000,
+  MAX_SETTING_LINE_CHARS: 100_000,
+  SETTINGS_PAGE_SIZE: 50,
 });
 
 // Metadata checks must run before reading bytes, on both sides of the worker.
@@ -25,12 +31,14 @@ function validateCapture(file, tool = 'logcat') {
   }
   if (file.size === 0) return 'This file is empty. Choose a capture with data.';
   const packages = tool === 'packages';
-  const limit = packages ? AnalysisConfig.MAX_PACKAGE_BYTES : AnalysisConfig.MAX_FILE_BYTES;
-  const label = packages ? AnalysisConfig.PACKAGE_LIMIT_LABEL : AnalysisConfig.FILE_LIMIT_LABEL;
+  const settings = tool === 'settings';
+  const limit = settings ? AnalysisConfig.MAX_SETTINGS_BYTES : packages ? AnalysisConfig.MAX_PACKAGE_BYTES : AnalysisConfig.MAX_FILE_BYTES;
+  const label = settings ? AnalysisConfig.SETTINGS_LIMIT_LABEL : packages ? AnalysisConfig.PACKAGE_LIMIT_LABEL : AnalysisConfig.FILE_LIMIT_LABEL;
   if (file.size > limit) {
     return `This file exceeds the ${label} limit. Choose a smaller capture.`;
   }
   if (packages) return /\.json$/i.test(file.name) ? null : 'Choose a packages.json inventory file.';
+  if (settings) return /\.txt$/i.test(file.name) ? null : 'Choose a settings_global.txt, settings_secure.txt, or settings_system.txt export.';
   if (!/\.(txt|log|zip)$/i.test(file.name)) return 'Choose a .txt, .log, or .zip file.';
   return null;
 }
@@ -374,6 +382,256 @@ const PackageAnalysis = (() => {
 })();
 
 ;
+// Read-only inspection of `adb shell settings list <namespace>` exports.
+const SettingsAnalysis = (() => {
+  'use strict';
+  const VERSION = 1;
+  const namespaces = ['global', 'secure', 'system'];
+  const catalogue = new Map();
+  const api = (namespace, anchor) => `https://developer.android.com/reference/android/provider/Settings.${namespace[0].toUpperCase() + namespace.slice(1)}#${anchor}`;
+  const wifiSource = 'https://android.googlesource.com/platform/packages/apps/Settings/+/master/src/com/android/settings/development/WirelessDebuggingEnabler.java';
+  const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+  function add(namespace, key, label, category, type, extra = {}) {
+    catalogue.set(`${namespace}:${key}`, { label, category, type, source: api(namespace, key.toUpperCase()), ...extra });
+  }
+  for (const [key, label, category] of [
+    ['adb_enabled', 'USB debugging', 'Development'],
+    ['development_settings_enabled', 'Developer options', 'Development'],
+    ['wait_for_debugger', 'Wait for debugger', 'Development'],
+    ['always_finish_activities', 'Finish activities immediately', 'Development'],
+    ['airplane_mode_on', 'Airplane mode', 'Connectivity'],
+    ['bluetooth_on', 'Bluetooth setting', 'Connectivity'],
+    ['wifi_on', 'Wi-Fi setting', 'Connectivity'],
+    ['data_roaming', 'Data roaming setting', 'Connectivity'],
+    ['auto_time', 'Automatic clock setting', 'Time'],
+    ['auto_time_zone', 'Automatic time-zone setting', 'Time'],
+    ['device_provisioned', 'Device provisioning flag', 'Device'],
+  ]) add('global', key, label, category, 'boolean');
+  add('global', 'adb_wifi_enabled', 'Wireless debugging', 'Development', 'boolean', { source: wifiSource });
+  add('global', 'debug_app', 'Debug target', 'Development', 'text');
+  add('global', 'http_proxy', 'HTTP proxy setting', 'Connectivity', 'text');
+  add('global', 'boot_count', 'Recorded boot count', 'Device', 'integer');
+  add('global', 'stay_on_while_plugged_in', 'Keep awake while charging', 'Power', 'charging-mask');
+  for (const key of ['window_animation_scale', 'transition_animation_scale', 'animator_duration_scale']) {
+    add('global', key, key.replace(/_/g, ' '), 'Display', 'scale');
+  }
+  for (const [key, label, category] of [
+    ['accessibility_enabled', 'Accessibility setting', 'Accessibility'],
+    ['touch_exploration_enabled', 'Touch exploration', 'Accessibility'],
+    ['accessibility_display_inversion_enabled', 'Colour inversion', 'Accessibility'],
+  ]) add('secure', key, label, category, 'boolean');
+  add('secure', 'android_id', 'Android identifier', 'Device', 'text', { note: 'Identifier scope varies by Android version, user, and signing identity.' });
+  add('secure', 'default_input_method', 'Default input method', 'Input', 'text');
+  add('secure', 'enabled_input_methods', 'Enabled input method records', 'Input', 'text');
+  add('secure', 'enabled_accessibility_services', 'Accessibility service records', 'Accessibility', 'text', { note: 'A stored list does not prove a service is currently running.' });
+  add('secure', 'location_mode', 'Legacy location mode', 'Location', 'legacy-location', { legacy: true, note: 'Deprecated since API 28; this export alone does not establish current location behaviour.' });
+  add('secure', 'install_non_market_apps', 'Legacy external-install flag', 'Privacy & access', 'boolean', { legacy: true, note: 'Deprecated since API 26. Current install permission is per app and is not established here.' });
+  add('secure', 'mock_location', 'Legacy mock-location flag', 'Location', 'boolean', { source: api('secure', 'ALLOW_MOCK_LOCATION'), legacy: true, note: 'Unused since API 23; this does not identify a current mock-location app.' });
+  for (const [key, label, category] of [
+    ['accelerometer_rotation', 'Automatic rotation', 'Display'],
+    ['sound_effects_enabled', 'Touch sounds', 'Sound'],
+  ]) add('system', key, label, category, 'boolean');
+  add('system', 'dtmf_tone', 'Dial-pad tones', 'Sound', 'boolean', { source: api('system', 'DTMF_TONE_WHEN_DIALING') });
+  add('system', 'haptic_feedback_enabled', 'Haptic feedback', 'Sound', 'boolean', { legacy: true, note: 'Deprecated since API 33; the vibration service applies user preferences.' });
+  add('system', 'vibrate_when_ringing', 'Vibrate when ringing', 'Sound', 'boolean', { legacy: true, note: 'Deprecated since API 33; the vibration service applies user preferences for incoming calls.' });
+  add('system', 'screen_brightness_mode', 'Brightness mode', 'Display', 'brightness-mode');
+  add('system', 'screen_brightness', 'Stored brightness level', 'Display', 'integer', { note: 'A stored value, not a live brightness measurement. Device scaling can differ.' });
+  add('system', 'screen_off_timeout', 'Inactivity timeout', 'Display', 'milliseconds', { note: 'Device policy and other features can affect the actual sleep or lock time.' });
+  add('system', 'font_scale', 'Font-size preference', 'Display', 'positive-scale', { note: 'This preference does not measure the rendered text size.' });
+  add('system', 'user_rotation', 'Stored rotation lock', 'Display', 'rotation', { note: 'Interpret with the automatic-rotation setting; this is not measured orientation.' });
+
+  function namespaceForFile(name) {
+    if (typeof name !== 'string') return null;
+    return /^(?:settings[_-])?(global|secure|system)(?:[ _-]?\(\d+\))?\.txt$/i.exec(name)?.[1].toLowerCase() || null;
+  }
+  function validateFiles(files) {
+    if (!Array.isArray(files) || files.length < 1 || files.length > 3) return 'Choose one to three settings exports, one per namespace.';
+    const seen = new Set();
+    for (const file of files) {
+      const error = validateCapture(file, 'settings');
+      if (error) return error;
+      const namespace = namespaceForFile(file.name);
+      if (!namespace) return 'Name the files settings_global.txt, settings_secure.txt, or settings_system.txt so their namespaces can be identified.';
+      if (seen.has(namespace)) return `Choose only one ${namespace} export in this selection.`;
+      seen.add(namespace);
+    }
+    return null;
+  }
+
+  function categoryHint(key) {
+    // Browsing hints only: matching a name does not give a value a meaning.
+    if (/adb|debug|development/.test(key)) return 'Development';
+    if (/accessibility|touch_exploration/.test(key)) return 'Accessibility';
+    if (/location|gps|gnss/.test(key)) return 'Location';
+    if (/wifi|bluetooth|mobile_data|roaming|network|airplane|tether|proxy/.test(key)) return 'Connectivity';
+    if (/battery|charging|low_power|sleep|doze|power|screensaver/.test(key)) return 'Power';
+    if (/screen|display|brightness|animation|font|rotation|theme|refresh_rate/.test(key)) return 'Display';
+    if (/volume|sound|ringtone|audio|vibrat|haptic|dtmf/.test(key)) return 'Sound';
+    if (/keyboard|input_method|spell_checker|pointer|(?:^|_)ime(?:_|$)/.test(key)) return 'Input';
+    if (/notification|lock|biometric|face|trust|backup|install|verifier/.test(key)) return 'Privacy & access';
+    if (/time|clock|zone/.test(key)) return 'Time';
+    return 'Other';
+  }
+
+  function interpret(definition, rawValue) {
+    const value = rawValue.trim();
+    if (!rawValue) return { text: 'Empty recorded value', valid: true };
+    if (!value) return { text: 'Whitespace-only text recorded', valid: true };
+    if (value === 'null') return { text: 'Literal "null" recorded; meaning not assumed', valid: true };
+    if (!definition) return { text: 'Raw value; no documented interpretation in this catalogue', valid: true };
+    const result = text => ({ text, valid: true });
+    const unknown = () => ({ text: 'Value outside the supported interpretation; raw value retained', valid: false });
+    if (definition.type === 'text') return result('Text value recorded');
+    if (definition.type === 'boolean') return value === '0' || value === '1' ? result(`${definition.legacy ? 'Legacy flag' : 'Flag'} ${value === '1' ? 'on' : 'off'} (recorded)`) : unknown();
+    if (definition.type === 'legacy-location') return /^(0|1|2|3)$/.test(value) ? result(`Legacy code ${value}; current location state not established`) : unknown();
+    if (definition.type === 'brightness-mode') return value === '0' ? result('Manual mode recorded') : value === '1' ? result('Automatic mode recorded') : unknown();
+    if (definition.type === 'rotation') return /^[0-3]$/.test(value) ? result(`${Number(value) * 90}° lock preference recorded`) : unknown();
+    if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)) return unknown();
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric > Number.MAX_SAFE_INTEGER) return unknown();
+    if (['integer', 'milliseconds', 'charging-mask'].includes(definition.type) && !Number.isSafeInteger(numeric)) return unknown();
+    if (definition.type === 'integer') return result(`${numeric} (recorded)`);
+    if (definition.type === 'milliseconds') return result(`${numeric} ms · ${numeric / 1000} seconds`);
+    if (definition.type === 'positive-scale' && numeric <= 0) return unknown();
+    if (definition.type === 'scale' || definition.type === 'positive-scale') return result(`${numeric}× preference${numeric === 0 ? ' · animations disabled' : ''}`);
+    if (definition.type === 'charging-mask') {
+      if (numeric > 15) return unknown();
+      return result(numeric === 0 ? 'Keep-awake charging flag off' : `Keep awake for: ${[[1, 'AC'], [2, 'USB'], [4, 'wireless'], [8, 'dock']].filter(([bit]) => numeric & bit).map(([, name]) => name).join(', ')}`);
+    }
+    return unknown();
+  }
+
+  function reviewFor(namespace, key, rawValue, interpretation) {
+    const value = rawValue.trim();
+    if (!interpretation.valid) return 'The catalogue cannot interpret this recorded value; check the device version or vendor definition.';
+    if (namespace !== 'global') return null;
+    if (['adb_enabled', 'adb_wifi_enabled'].includes(key) && value === '1') return 'Debugging is enabled in the recorded settings. Review if unexpected; connected clients and authorizations are not recorded.';
+    if (key === 'development_settings_enabled' && value === '1') return 'Developer options are enabled in the snapshot; this can be intentional.';
+    if (key === 'wait_for_debugger' && value === '1') return 'The debugger-wait flag can affect application startup.';
+    if (key === 'always_finish_activities' && value === '1') return 'Immediate activity cleanup can affect application lifecycle behaviour.';
+    if (key === 'debug_app' && value && value !== 'null') return 'A debug target is recorded. Check whether it is intended.';
+    if (key === 'http_proxy' && value && !['null', ':0'].includes(value)) return 'A proxy value is recorded; this file does not establish whether it is active.';
+    return null;
+  }
+
+  function analyse(inputs, progress = () => {}) {
+    if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 3) throw new Error('Provide one to three settings exports.');
+    const records = [], files = [], issues = [], seen = new Set();
+    let physicalLines = 0;
+    for (const input of inputs) {
+      if (!isObject(input) || !namespaces.includes(input.namespace) || typeof input.text !== 'string' || typeof input.source_file !== 'string') throw new Error('Each settings export needs a namespace, filename, and text.');
+      if (seen.has(input.namespace)) throw new Error(`More than one ${input.namespace} export was supplied.`);
+      seen.add(input.namespace);
+      if (new TextEncoder().encode(input.text).byteLength > AnalysisConfig.MAX_SETTINGS_BYTES) throw new Error(`This settings export exceeds ${AnalysisConfig.SETTINGS_LIMIT_LABEL}.`);
+      if (input.text.includes('\0')) throw new Error('Export settings as UTF-8 text; a NUL byte was found.');
+      const lines = input.text.replace(/^\uFEFF/, '').split(/\r\n|\n|\r/);
+      if (lines.at(-1) === '') lines.pop();
+      physicalLines += lines.length;
+      if (physicalLines > AnalysisConfig.MAX_SETTINGS_LINES) throw new Error('Too many settings lines. Split or reduce the exports.');
+      let count = 0, invalid = 0;
+      progress(`Reading ${input.namespace} settings…`, true);
+      for (let index = 0; index < lines.length; index++) {
+        const line = lines[index];
+        if (line.length > AnalysisConfig.MAX_SETTING_LINE_CHARS) throw new Error(`Line ${index + 1} in ${input.source_file} is too long.`);
+        if (!line.trim()) continue;
+        const equal = line.indexOf('=');
+        const key = equal < 0 ? '' : line.slice(0, equal).trim();
+        if (!key || !/^[A-Za-z0-9_.:/-]+$/.test(key)) {
+          invalid++;
+          if (issues.length < 100) issues.push({ namespace: input.namespace, source_file: input.source_file, line: index + 1, message: 'Expected a setting name followed by = and its value.' });
+          continue;
+        }
+        if (records.length >= AnalysisConfig.MAX_SETTINGS_RECORDS) throw new Error('Too many settings records. Reduce the exports.');
+        // Only the first '=' separates the key. JSON, lists, URLs, and '=' in
+        // values stay intact; an empty string and literal "null" are distinct.
+        const value = line.slice(equal + 1);
+        const definition = catalogue.get(`${input.namespace}:${key}`);
+        const interpretation = interpret(definition, value);
+        records.push({
+          id: `${input.namespace}:${index + 1}`, namespace: input.namespace, key, value,
+          source_file: input.source_file, line: index + 1,
+          category: definition?.category || categoryHint(key), category_basis: definition ? 'catalogue' : 'name-hint',
+          label: definition?.label || key, known: Boolean(definition), legacy: Boolean(definition?.legacy),
+          interpretation: interpretation.text, note: definition?.note || null,
+          source: definition?.source || null,
+          review: reviewFor(input.namespace, key, value, interpretation),
+          value_state: value === '' ? 'empty' : value.trim() === 'null' ? 'literal-null' : 'recorded',
+          duplicate: false,
+        });
+        count++;
+      }
+      if (!count) throw new Error(`No key=value settings were found in ${input.source_file}.`);
+      files.push({ namespace: input.namespace, source_file: input.source_file, records: count, physical_lines: lines.length, malformed_lines: invalid });
+    }
+    const frequencies = new Map();
+    for (const row of records) {
+      const identity = `${row.namespace}:${row.key}`;
+      frequencies.set(identity, (frequencies.get(identity) || 0) + 1);
+    }
+    for (const row of records) row.duplicate = frequencies.get(`${row.namespace}:${row.key}`) > 1;
+    return {
+      tool: 'settings', version: VERSION, source_file: files.map(file => file.source_file).join(' + '), analyzed_at: new Date().toISOString(),
+      files, records, issues,
+      counts: {
+        records: records.length, files: files.length, distinct_settings: frequencies.size,
+        global: records.filter(row => row.namespace === 'global').length,
+        secure: records.filter(row => row.namespace === 'secure').length,
+        system: records.filter(row => row.namespace === 'system').length,
+        explained: records.filter(row => row.known).length,
+        raw_only: records.filter(row => !row.known).length,
+        review: records.filter(row => row.review || row.duplicate).length,
+        legacy: records.filter(row => row.legacy).length,
+        duplicate_records: records.filter(row => row.duplicate).length,
+        malformed_lines: files.reduce((sum, file) => sum + file.malformed_lines, 0),
+        empty: records.filter(row => row.value_state === 'empty').length,
+        literal_null: records.filter(row => row.value_state === 'literal-null').length,
+      },
+      notes: [
+        'These are stored settings from the exports, not measurements of current device behaviour. No device settings are changed.',
+        'Absent keys remain absent. Empty strings and the literal text null are preserved, not treated as disabled.',
+        'The namespace and source line identify each record. Duplicate keys are retained; no winning value is chosen.',
+        'Android version, device policies, user/profile, and vendor changes can affect meaning. Legacy settings do not establish current app permissions.',
+        'Unexplained keys remain searchable as raw values. Their categories are name-based browsing hints, not verified interpretations.',
+        'Files are combined for browsing. Their filenames do not prove that they came from the same device, user, or capture time.',
+        'Downloads and optional history include the recorded values, including identifiers. No inventory or settings data is sent to a server.',
+      ],
+    };
+  }
+
+  function matches(row, filters = {}) {
+    if (filters.namespace && row.namespace !== filters.namespace) return false;
+    if (filters.category && row.category !== filters.category) return false;
+    if (filters.status === 'review' && !(row.review || row.duplicate)) return false;
+    if (filters.status === 'explained' && !row.known) return false;
+    if (filters.status === 'raw' && row.known) return false;
+    if (filters.status === 'legacy' && !row.legacy) return false;
+    if (filters.status === 'duplicates' && !row.duplicate) return false;
+    if (['empty', 'literal-null'].includes(filters.status) && row.value_state !== filters.status) return false;
+    const query = String(filters.query || '').trim().toLowerCase();
+    return !query || `${row.namespace} ${row.key} ${row.value} ${row.label} ${row.interpretation} ${row.note || ''}`.toLowerCase().includes(query);
+  }
+  function page(records, filters = {}, requested = 0) {
+    const filtered = records.filter(row => matches(row, filters));
+    const pages = Math.max(1, Math.ceil(filtered.length / AnalysisConfig.SETTINGS_PAGE_SIZE));
+    const current = Math.min(pages - 1, Math.max(0, Math.floor(Number(requested)) || 0));
+    return { total: filtered.length, page: current, pages, records: filtered.slice(current * AnalysisConfig.SETTINGS_PAGE_SIZE, (current + 1) * AnalysisConfig.SETTINGS_PAGE_SIZE) };
+  }
+  function filteredReport(summary, filters = {}) {
+    const selection = Object.fromEntries(['query', 'namespace', 'category', 'status'].map(key => [key, typeof filters[key] === 'string' ? filters[key] : '']));
+    const records = summary.records.filter(row => matches(row, selection));
+    return { tool: 'settings-filtered', version: VERSION, analyzed_at: summary.analyzed_at, exported_at: new Date().toISOString(), files: summary.files, filters: selection, total_records: summary.records.length, matching_records: records.length, records, notes: summary.notes };
+  }
+  function isSummary(value) {
+    return isObject(value) && value.tool === 'settings' && value.version === VERSION && typeof value.source_file === 'string' && isObject(value.counts)
+      && Array.isArray(value.files) && value.files.length <= 3 && value.files.every(file => isObject(file) && namespaces.includes(file.namespace) && typeof file.source_file === 'string')
+      && Array.isArray(value.records) && value.records.length <= AnalysisConfig.MAX_SETTINGS_RECORDS && value.records.every(row => isObject(row) && namespaces.includes(row.namespace) && ['id', 'key', 'value', 'source_file', 'label', 'category', 'interpretation'].every(key => typeof row[key] === 'string') && Number.isSafeInteger(row.line) && row.line > 0)
+      && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string') && Array.isArray(value.issues) && value.issues.every(isObject);
+  }
+  return { namespaceForFile, validateFiles, analyse, matches, page, filteredReport, isSummary };
+})();
+
+;
 const PackagesView = (() => {
   'use strict';
   const classification = { system: 'System (reported)', 'third-party': 'Third-party (reported)', unknown: 'Not established', conflicting: 'Conflicting flags' };
@@ -565,6 +823,110 @@ const PackagesView = (() => {
 })();
 
 ;
+const SettingsView = (() => {
+  'use strict';
+  const keys = ['query', 'namespace', 'category', 'status'];
+  const status = row => row.duplicate ? 'Duplicate key' : row.review ? 'Review note' : row.legacy ? 'Legacy setting' : row.known ? 'Explained' : 'Raw value';
+
+  function render(summary, view, helpers) {
+    const { $, escapeHTML, number, stat, panel, table, notes, download } = helpers;
+    const counts = summary.counts;
+    const categories = [...new Set(summary.records.map(row => row.category))].sort();
+    $('settings-results').innerHTML = `
+      <div class="stats">
+        ${stat('Settings', counts.records, `${number(counts.distinct_settings)} distinct namespace/key pairs`)}
+        ${stat('Namespaces loaded', counts.files, 'Global · Secure · System')}
+        ${stat('Explained', counts.explained, `${number(counts.raw_only)} kept as raw values`)}
+        ${stat('Review notes', counts.review, 'Configuration and data notes; not a malware score')}
+      </div>
+      <div class="notice"><strong>A snapshot of recorded settings.</strong><p>Values describe the exports. Device policy, Android version, and manufacturer changes can affect their meaning. Legacy keys do not establish current permissions.</p></div>
+      ${panel('Loaded exports', view.sourceFiles.length ? 'Add files together or one at a time. Selecting a new file for a namespace replaces that namespace in the current session.' : 'Saved summary. Reopen all exports you want to combine; source files are not retained in history.', table(['Namespace', 'Source', 'Settings', 'Skipped lines'], ['global', 'secure', 'system'].map(namespace => {
+        const file = summary.files.find(item => item.namespace === namespace);
+        return [namespace, escapeHTML(file?.source_file || 'Not loaded'), file ? number(file.records) : '—', file ? number(file.malformed_lines) : '—'];
+      })))}
+      ${counts.malformed_lines ? `<div class="notice warning"><strong>${number(counts.malformed_lines)} line(s) could not be parsed.</strong><p>The file may contain incomplete or unrelated text. Up to 100 line locations are listed below.</p>${notes(summary.issues.map(issue => `${issue.source_file}:${issue.line} — ${issue.message}`))}</div>` : ''}
+      <section class="panel">
+        <div class="panel-header"><h2>Settings explorer</h2><button class="button small" id="settings-show-review">Show review notes</button></div>
+        <div class="filters">
+          <div class="field"><label for="setting-query">Search keys and values</label><input id="setting-query" type="search" placeholder="adb, brightness, keyboard, package name…"></div>
+          <div class="field"><label for="setting-namespace">Namespace</label><select id="setting-namespace"><option value="">All loaded namespaces</option><option value="global">Global</option><option value="secure">Secure</option><option value="system">System</option></select></div>
+          <div class="field"><label for="setting-category">Category</label><select id="setting-category"><option value="">All categories</option>${categories.map(category => `<option value="${escapeHTML(category)}">${escapeHTML(category)}</option>`).join('')}</select></div>
+          <div class="field"><label for="setting-status">Evidence filter</label><select id="setting-status"><option value="">All settings</option><option value="review">Review notes / duplicate keys</option><option value="explained">Has a documented interpretation</option><option value="raw">Raw value only</option><option value="legacy">Legacy keys</option><option value="duplicates">Duplicate keys</option><option value="empty">Empty string</option><option value="literal-null">Literal null</option></select></div>
+        </div>
+        <div class="filter-footer"><span id="settings-count" role="status"></span><div class="button-row"><button class="button small" id="settings-clear">Clear filters</button><button class="button small" id="settings-export">Export matching JSON</button></div></div>
+        <div id="settings-list"></div>
+        <div class="pagination"><span id="settings-page"></span><div class="button-row"><button class="button small" id="settings-prev">Previous</button><button class="button small" id="settings-next">Next</button></div></div>
+      </section>
+      ${panel('Reading these settings', '', notes(summary.notes))}`;
+
+    function updateRows() {
+      const result = SettingsAnalysis.page(summary.records, view.filters, view.page);
+      view.page = result.page;
+      $('settings-count').textContent = `${number(result.total)} matching settings`;
+      $('settings-page').textContent = `Page ${number(result.page + 1)} of ${number(result.pages)}`;
+      $('settings-prev').disabled = result.page === 0;
+      $('settings-next').disabled = result.page + 1 >= result.pages;
+      $('settings-list').innerHTML = table(['Setting / namespace', 'Recorded value', 'Interpretation', 'Evidence'], result.records.map(row => [
+        `<strong>${escapeHTML(row.key)}</strong><br><span class="tiny">${escapeHTML(row.namespace)} · ${escapeHTML(row.category)}${row.category_basis === 'name-hint' ? ' (name hint)' : ''}</span>`,
+        `<code>${escapeHTML(row.value === '' ? '(empty string)' : row.value.slice(0, 180))}${row.value.length > 180 ? '…' : ''}</code>`,
+        `<span class="badge ${row.review || row.duplicate ? 'warn' : 'neutral'}">${escapeHTML(status(row))}</span><p class="tiny">${escapeHTML(row.interpretation)}</p>`,
+        `<button class="button small" data-setting="${escapeHTML(row.id)}">Inspect record</button><br><span class="tiny">Line ${number(row.line)}</span>`,
+      ]));
+    }
+    for (const key of keys) {
+      const input = $(`setting-${key}`);
+      input.value = view.filters[key] || '';
+      input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', () => { view.filters[key] = input.value; view.page = 0; updateRows(); });
+    }
+    function select(filters) {
+      view.filters = filters; view.page = 0;
+      for (const key of keys) $(`setting-${key}`).value = filters[key] || '';
+      updateRows();
+    }
+    $('settings-clear').onclick = () => select({});
+    $('settings-show-review').onclick = () => { select({ status: 'review' }); $('setting-status').focus(); };
+    $('settings-prev').onclick = () => { view.page--; updateRows(); };
+    $('settings-next').onclick = () => { view.page++; updateRows(); };
+    $('settings-export').onclick = () => download(new Blob([JSON.stringify(SettingsAnalysis.filteredReport(summary, view.filters), null, 2)], { type: 'application/json' }), 'settings-filtered.json');
+    updateRows();
+  }
+
+  function showDetails(summary, id, helpers) {
+    const row = summary?.records.find(record => record.id === id);
+    if (!row) return;
+    const { $, escapeHTML, panel, table } = helpers;
+    $('setting-title').textContent = row.key;
+    $('setting-meta').textContent = `${row.namespace} · ${row.source_file}:${row.line}`;
+    $('setting-content').innerHTML = panel('Recorded value', 'Full value, preserved after the first equals sign.', `<pre>${escapeHTML(row.value === '' ? '(empty string)' : row.value)}</pre>`)
+      + panel('Interpretation', '', table(['Field', 'Evidence'], [
+        ['Setting', escapeHTML(row.label)], ['Namespace', escapeHTML(row.namespace)],
+        ['Category', escapeHTML(`${row.category}${row.category_basis === 'name-hint' ? ' (name-based hint)' : ''}`)],
+        ['Status', escapeHTML(status(row))], ['Interpretation', escapeHTML(row.interpretation)],
+        ['Version / context note', escapeHTML(row.note || 'No additional interpretation in this catalogue.')],
+        ['Review note', escapeHTML(row.review || 'None from these checks')],
+        ['Duplicate key', row.duplicate ? 'Multiple records for this key in this namespace; all are retained.' : 'No'],
+      ]) + (row.source && /^https:\/\//.test(row.source) ? `<p class="hint"><a href="${escapeHTML(row.source)}" target="_blank" rel="noopener noreferrer">Android reference for this key</a></p>` : ''))
+      + panel('Source evidence', '', `<p class="tiny">${escapeHTML(row.source_file)} · line ${row.line}</p><pre>${escapeHTML(`${row.key}=${row.value}`)}</pre>`);
+    if (!$('setting-dialog').open) $('setting-dialog').showModal();
+  }
+
+  function markdown(summary) {
+    const block = value => String(value ?? '').split(/\r\n|\n|\r/).map(line => `    ${line}`).join('\n');
+    const lines = ['# Android settings analysis', '', `Analysed: ${summary.analyzed_at}`, '', '## Counts', ''];
+    for (const [key, value] of Object.entries(summary.counts)) lines.push(`- ${key.replace(/_/g, ' ')}: ${value}`);
+    lines.push('', '## Notes', '', ...summary.notes.map(note => `- ${note}`), '', '## Source files', '');
+    for (const file of summary.files) lines.push(block(`${file.namespace}: ${file.source_file}\nRecords: ${file.records}; skipped lines: ${file.malformed_lines}`), '');
+    lines.push('## Settings evidence', '');
+    for (const row of summary.records) {
+      lines.push(block(`${row.source_file}:${row.line} [${row.namespace}]\n${row.key}=${row.value}\n${row.interpretation}\nStatus: ${status(row)}${row.note ? `\nContext: ${row.note}` : ''}${row.review ? `\nReview: ${row.review}` : ''}${row.source ? `\nReference: ${row.source}` : ''}`), '');
+    }
+    if (summary.issues.length) lines.push('## Skipped lines (up to 100)', '', ...summary.issues.map(issue => block(`${issue.source_file}:${issue.line} — ${issue.message}`)));
+    return lines.join('\n');
+  }
+  return { render, showDetails, markdown };
+})();
+
+;
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -573,10 +935,10 @@ const PackagesView = (() => {
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const bytes = n => n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1048576).toFixed(1)} MiB`;
   function createToolState() {
-    return { worker: null, summary: null, tab: 'overview', busy: false, fileSize: 0, page: 0, queryId: 0, filters: {} };
+    return { worker: null, summary: null, tab: 'overview', busy: false, fileSize: 0, page: 0, queryId: 0, filters: {}, sourceFiles: [] };
   }
-  const state = { bugreport: createToolState(), logcat: createToolState(), packages: createToolState() };
-  const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser', packages: 'Package Analyser' };
+  const state = { bugreport: createToolState(), logcat: createToolState(), packages: createToolState(), settings: createToolState() };
+  const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser', packages: 'Package Analyser', settings: 'Settings Analyser' };
   const historyKey = 'android_tools_history_v2';
   let route = 'home', toastTimer = null, queryTimer = null, contextTool = null, contextTarget = 1;
   let contextRequestId = 0;
@@ -603,6 +965,7 @@ const PackagesView = (() => {
   function renderTool(tool) {
     const log = tool === 'logcat';
     const packages = tool === 'packages';
+    const settings = tool === 'settings';
     const view = {
       logcat: {
         eyebrow: 'LOGCAT INVESTIGATION', noun: 'logcat file',
@@ -625,32 +988,43 @@ const PackagesView = (() => {
         open: 'Each record contains a package name and its APK file metadata. Parsing runs locally.',
         investigate: 'Review sourced China connections, reported system and third-party packages, installers, and missing data.',
       },
+      settings: {
+        eyebrow: 'ANDROID SETTINGS', noun: 'settings exports',
+        subtitle: 'Explore global, secure, and system settings with their recorded values and source evidence.',
+        upload: 'Choose settings_global.txt, settings_secure.txt, and settings_system.txt together or one at a time.',
+        open: 'Load one to three key=value text exports. Each filename identifies its namespace.',
+        investigate: 'Search every recorded value, inspect documented keys, and review debugging flags or duplicate records.',
+      },
     }[tool];
     const uploadHint = packages
       ? `JSON · UP TO ${AnalysisConfig.PACKAGE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_PACKAGES)} PACKAGES · PROCESSED LOCALLY`
+      : settings ? `1–3 TXT FILES · UP TO ${AnalysisConfig.SETTINGS_LIMIT_LABEL} · PROCESSED LOCALLY`
       : `TXT, LOG, ZIP · UP TO ${AnalysisConfig.FILE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_LINES)} LINES · PROCESSED LOCALLY`;
     $(tool).innerHTML = `
       <div class="page-heading"><div><div class="eyebrow">${view.eyebrow}</div><h1>${titles[tool]}</h1><p class="subtitle">${view.subtitle}</p></div><button class="button" data-demo="${tool}">Try a sample</button></div>
       <div id="${tool}-upload" class="upload-panel" data-drop="${tool}">
         <div class="upload-icon">${icon('upload')}</div><h2>Drop your ${view.noun} here</h2><p>${view.upload}</p>
-        <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose file</button></div><p class="upload-hint">${uploadHint}</p>
-        <input id="${tool}-file" type="file" accept="${packages ? '.json' : '.txt,.log,.zip'}" hidden aria-label="Choose ${view.noun} file">
+        <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose ${settings ? 'files' : 'file'}</button></div><p class="upload-hint">${uploadHint}</p>
+        <input id="${tool}-file" type="file" accept="${packages ? '.json' : settings ? '.txt' : '.txt,.log,.zip'}" ${settings ? 'multiple' : ''} hidden aria-label="Choose ${view.noun}">
       </div>
-      <label class="remember"><input id="${tool}-remember" type="checkbox">Remember analysis summaries in this browser</label>
+      <label class="remember"><input id="${tool}-remember" type="checkbox">Remember analysis summaries in this browser${settings ? ' (includes raw settings and identifiers)' : ''}</label>
       <div id="${tool}-error" class="notice error" role="alert" hidden></div>
       <div id="${tool}-loading" class="loading" hidden><span class="spinner" aria-hidden="true"></span><span id="${tool}-progress" class="loading-text" role="status" aria-live="polite">Reading your file…</span><button class="button small" data-cancel="${tool}">Cancel</button></div>
       <div id="${tool}-archive" class="archive-picker" hidden><h2>Choose a file from this archive</h2><p>The archive contains several text files. Select the capture to analyse.</p><label class="field-label" for="${tool}-entry">File in archive</label><select id="${tool}-entry"></select><div class="button-row"><button class="button primary" data-entry="${tool}">Analyse selected file</button><button class="button" data-cancel="${tool}">Cancel</button></div></div>
-      <div id="${tool}-filebar" class="file-bar" hidden><div class="file-info">${icon('file')}<div><span class="filename" id="${tool}-filename"></span><span class="file-meta" id="${tool}-filemeta"></span></div></div><div class="button-row report-actions"><button class="button small" data-download="${tool}" data-format="json">${icon('download')}JSON</button><button class="button small" data-download="${tool}" data-format="md">Report</button><button class="button small" data-reset="${tool}">New file</button></div></div>
+      <div id="${tool}-filebar" class="file-bar" hidden><div class="file-info">${icon('file')}<div><span class="filename" id="${tool}-filename"></span><span class="file-meta" id="${tool}-filemeta"></span></div></div><div class="button-row report-actions">${settings ? '<button class="button small" data-browse="settings">Add / replace exports</button>' : ''}<button class="button small" data-download="${tool}" data-format="json">${icon('download')}JSON</button><button class="button small" data-download="${tool}" data-format="md">Report</button><button class="button small" data-reset="${tool}">${settings ? 'New analysis' : 'New file'}</button></div></div>
       <div id="${tool}-results" hidden></div>
       <div id="${tool}-help" class="help-grid"><div class="help-card"><span class="step">01 / OPEN</span><h3>Start with your capture</h3><p>${view.open}</p></div><div class="help-card"><span class="step">02 / INVESTIGATE</span><h3>Follow the evidence</h3><p>${view.investigate}</p></div><div class="help-card"><span class="step">03 / EXPORT</span><h3>Take the findings with you</h3><p>Download a JSON summary or a readable Markdown report.${log ? ' Export matching raw log entries too.' : ''}</p></div></div>`;
     $(`${tool}-file`).addEventListener('change', event => {
-      const file = event.target.files[0]; if (file) openFile(tool, file); event.target.value = '';
+      const files = Array.from(event.target.files || []);
+      if (files.length) { if (settings) openSettings(files); else openFile(tool, files[0]); }
+      event.target.value = '';
     });
     const drop = $(`${tool}-upload`);
     for (const name of ['dragenter', 'dragover']) drop.addEventListener(name, event => { event.preventDefault(); drop.classList.add('dragging'); });
     drop.addEventListener('dragleave', event => { if (!drop.contains(event.relatedTarget)) drop.classList.remove('dragging'); });
     drop.addEventListener('drop', event => {
       event.preventDefault(); drop.classList.remove('dragging');
+      if (settings) { openSettings(Array.from(event.dataTransfer.files)); return; }
       if (event.dataTransfer.files.length !== 1) { showError(tool, 'Choose one file at a time.'); return; }
       openFile(tool, event.dataTransfer.files[0]);
     });
@@ -671,6 +1045,7 @@ const PackagesView = (() => {
     $(`${tool}-results`).replaceChildren(); $(`${tool}-upload`).hidden = false; $(`${tool}-help`).hidden = false;
     $(tool).setAttribute('aria-busy', 'false');
     if (tool === 'packages' && $('package-dialog').open) $('package-dialog').close();
+    if (tool === 'settings' && $('setting-dialog').open) $('setting-dialog').close();
     if (contextTool === tool) {
       contextRequestId++;
       contextTool = null;
@@ -680,10 +1055,22 @@ const PackagesView = (() => {
   function openFile(tool, file) {
     const validationError = validateCapture(file, tool);
     if (validationError) { showError(tool, validationError); return; }
+    startAnalysis(tool, file.size, file.name, { type: 'open', file, tool });
+  }
+  function openSettings(files) {
+    const error = SettingsAnalysis.validateFiles(files);
+    if (error) { showError('settings', error); return; }
+    const combined = new Map(state.settings.sourceFiles.map(file => [SettingsAnalysis.namespaceForFile(file.name), file]));
+    for (const file of files) combined.set(SettingsAnalysis.namespaceForFile(file.name), file);
+    const exports = [...combined.values()];
+    startAnalysis('settings', exports.reduce((sum, file) => sum + file.size, 0), `${exports.length} settings export(s)`, { type: 'open-settings', files: exports }, exports);
+  }
+  function startAnalysis(tool, fileSize, label, request, sourceFiles = []) {
     reset(tool);
-    state[tool].fileSize = file.size;
+    state[tool].fileSize = fileSize;
+    state[tool].sourceFiles = sourceFiles;
     setBusy(tool, true); $(`${tool}-upload`).hidden = true; $(`${tool}-help`).hidden = true;
-    $(`${tool}-progress`).textContent = `Opening ${file.name}…`;
+    $(`${tool}-progress`).textContent = `Opening ${label}…`;
     if (!('Worker' in window)) { failOpen(tool, 'This browser does not support analysis workers. Use a current browser.'); return; }
     let worker;
     try {
@@ -698,13 +1085,14 @@ const PackagesView = (() => {
     };
     try {
       // File is structured-cloneable. Read and decode it inside the worker.
-      worker.postMessage({ type: 'open', file, tool });
+      worker.postMessage(request);
     } catch (_) {
       failOpen(tool, 'The browser could not pass this file to the local analyser. Reopen the capture to try again.');
     }
   }
   function failOpen(tool, message) {
     state[tool].worker?.terminate(); state[tool].worker = null;
+    if (tool === 'settings') state[tool].sourceFiles = [];
     setBusy(tool, false); $(`${tool}-archive`).hidden = true; $(`${tool}-upload`).hidden = false; showError(tool, message);
   }
   function handleMessage(tool, data) {
@@ -718,7 +1106,7 @@ const PackagesView = (() => {
       $(`${tool}-entry`).replaceChildren(...data.entries.map(name => new Option(name, name)));
     }
     if (data.type === 'error') {
-      if (['open', 'entry'].includes(data.operation)) failOpen(tool, data.message);
+      if (['open', 'open-settings', 'entry'].includes(data.operation)) failOpen(tool, data.message);
       else { showError(tool, data.message); if (data.operation === 'export') { const b = $('export-filtered'); if (b) b.disabled = false; } }
     }
     if (data.type === 'result') {
@@ -764,6 +1152,8 @@ const PackagesView = (() => {
     const el = $(`${tool}-results`);
     if (tool === 'packages') {
       PackagesView.render(s, state.packages, packageUI);
+    } else if (tool === 'settings') {
+      SettingsView.render(s, state.settings, packageUI);
     } else if (tool === 'logcat') {
       el.innerHTML = `<div class="stats">${stat('Log entries', s.parsed_records, `${number(s.physical_lines)} source lines`)}${stat('Error records', s.levels.E, 'Priority E · not all are crashes', s.levels.E ? 'danger' : '')}${stat('Warning records', s.levels.W, 'Priority W', s.levels.W ? 'warn' : '')}${stat('Crash markers', s.counts.native + s.counts.java, `${number(s.counts.anr)} ANR markers`, s.counts.native + s.counts.java ? 'danger' : '')}</div>${tabs(tool, [['overview', 'Overview'], ['findings', `Findings · ${number(s.finding_groups)}`], ['explorer', 'Log explorer']])}<div id="logcat-tab-content"></div>`;
       if (state[tool].tab === 'overview') renderLogOverview(s);
@@ -913,6 +1303,7 @@ const PackagesView = (() => {
   }
   function markdown(s) {
     if (s.tool === 'packages') return PackagesView.markdown(s);
+    if (s.tool === 'settings') return SettingsView.markdown(s);
     const block = text => String(text ?? '').split('\n').map(line => `    ${line}`).join('\n');
     const lines = [`# ${titles[s.tool] || 'Bug Report Analyser'} report`, '', 'Source:', '', block(s.source_file), '', `Analysed: ${s.analyzed_at}`, '', '## Counts', ''];
     for (const [name, value] of Object.entries(s.counts)) lines.push(`- ${name.replace(/_/g, ' ')}: ${value}`);
@@ -945,7 +1336,7 @@ const PackagesView = (() => {
         const legacy = JSON.parse(localStorage.getItem('bugreport_analyzer_history_v1') || '[]');
         if (Array.isArray(legacy)) value = legacy.filter(e => e?.summary?.counts && e.summary.battery_diagnosis && e.summary.crash_diagnosis && e.summary.stalkerware_indicators).map(e => ({ ...e, summary: { ...e.summary, tool: 'bugreport', coverage: { sectioned: e.summary.sections_found?.[0] !== 'FULL_TEXT', battery: Boolean(e.summary.wakelocks?.length), packages: Boolean(e.summary.stalkerware_indicators.contributors?.length) }, notes: ['Saved by the previous analyser. Reopen the capture to refresh coverage and run the updated checks.'] } }));
       }
-      const valid = Array.isArray(value) ? value.filter(e => e?.summary && typeof e.summary.source_file === 'string' && e.summary.counts && Object.keys(titles).includes(e.summary.tool) && (e.summary.tool !== 'packages' || PackageAnalysis.isSummary(e.summary))) : [];
+      const valid = Array.isArray(value) ? value.filter(e => e?.summary && typeof e.summary.source_file === 'string' && e.summary.counts && Object.keys(titles).includes(e.summary.tool) && (e.summary.tool !== 'packages' || PackageAnalysis.isSummary(e.summary)) && (e.summary.tool !== 'settings' || SettingsAnalysis.isSummary(e.summary))) : [];
       return valid.slice(0, 10).map(entry => entry.summary.tool === 'packages' ? { ...entry, summary: PackageAnalysis.withOrigins(entry.summary) } : entry);
     } catch (_) { return []; }
   }
@@ -967,6 +1358,15 @@ const PackagesView = (() => {
   }
 
   function demo(tool) {
+    if (tool === 'settings') {
+      const samples = {
+        global: 'adb_enabled=0\nadb_wifi_enabled=1\ndevelopment_settings_enabled=1\nauto_time=1\ndebug_app=null\nwindow_animation_scale=0.5\n',
+        secure: 'accessibility_enabled=0\ninstall_non_market_apps=1\nlocation_mode=3\nenabled_accessibility_services=\n',
+        system: 'screen_brightness_mode=0\nscreen_brightness=80\nscreen_off_timeout=120000\nfont_scale=1.2\nexample_vendor_setting=a=b\n',
+      };
+      openSettings(Object.entries(samples).map(([namespace, text]) => new File([text], `settings_${namespace}.txt`, { type: 'text/plain' })));
+      return;
+    }
     if (tool === 'packages') {
       const inventory = [
         { name: 'com.example.system', uid: 10001, system: true, third_party: false, disabled: false, installer: 'null', files: [{ path: '/system/app/Example/base.apk', sha256: 'a'.repeat(64), verified_certificate: false, trusted_certificate: false }] },
@@ -1014,6 +1414,7 @@ const PackagesView = (() => {
     if (d.tag) { state.logcat.filters = { tag: d.tag }; state.logcat.page = 0; state.logcat.tab = 'explorer'; renderResult('logcat'); }
     if (d.context) openContext(d.tool, Number(d.context));
     if (d.package != null) PackagesView.showDetails(state.packages.summary, d.package, packageUI);
+    if (d.setting != null) SettingsView.showDetails(state.settings.summary, d.setting, packageUI);
     if (d.close) $(d.close).close();
     if (d.download) {
       const s = state[d.download].summary; if (!s) return;
