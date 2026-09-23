@@ -348,7 +348,22 @@ const PackageNames = (() => {
       ["com.samsung.android.mtp", "Samsung MTP Service"],
       ["com.samsung.android.beaconmanager", "Samsung Beacon Manager"],
       ["com.oplus.sau", "OPPO System Upgrade Services"],
-      ["com.oneplus.backuprestore", "OnePlus Clone Phone"]
+      ["com.oneplus.backuprestore", "OnePlus Clone Phone"],
+      ["com.samsung.android.app.updatecenter", "Samsung App Update Center"],
+      ["com.facebook.system", "Meta (Facebook) System Framework"],
+      ["com.heytap.market", "HeyTap App Market (OPPO)"],
+      ["com.indus.appstore", "Indus Appstore"],
+      ["com.motorola.installer", "Motorola App Installer"],
+      ["com.dti.motorola", "Motorola Moto App Manager (Digital Turbine)"],
+      ["com.sec.android.easyMover", "Samsung Smart Switch Mobile"],
+      ["com.samsung.android.spay", "Samsung Pay"],
+      ["com.aura.oobe.lenovo", "Lenovo Aura (Digital Turbine Setup)"],
+      ["com.lenovo.tbengine", "Lenovo TB Engine"],
+      ["com.tblenovo.lenovowhatsnew", "Lenovo What's New"],
+      ["com.android.emergency", "Android Emergency Info"],
+      ["com.zui.keyboardupdate.olympia", "ZUI Keyboard Update (Lenovo)"],
+      ["in.startv.hotstar", "Disney+ Hotstar"],
+      ["com.google.android.overlay.gmsconfig.searchselector", "GMS Config Search Selector Overlay"]
   ];
   const names = new Map(rows.map(([id, name, url]) => [id, Object.freeze({
     name, matched_package: id, match_method: 'exact-package-id',
