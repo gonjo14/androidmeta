@@ -737,14 +737,12 @@ const PackagesView = (() => {
       $('package-page').textContent = `Page ${number(result.page + 1)} of ${number(result.pages)}`;
       $('package-prev').disabled = result.page === 0;
       $('package-next').disabled = result.page + 1 >= result.pages;
-      $('package-list').innerHTML = table(['App / package', 'Version', 'China connection', 'Reported type / state', 'Installer', 'APK files', 'Notes', 'Evidence'], result.records.map(pkg => [
+      $('package-list').innerHTML = table(['App / package', 'China connection', 'Reported type / state', 'Installer', 'APK files', 'Evidence'], result.records.map(pkg => [
         `<strong class="package-name">${escapeHTML(pkg.display_name)}</strong>${pkg.display_name !== pkg.name ? `<code class="package-id">${escapeHTML(pkg.name)}</code>` : ''}<span class="tiny">${escapeHTML(nameSources[pkg.display_name_source])}<br>UID ${escapeHTML(pkg.uid ?? 'Not recorded')}</span>`,
-        versionText(pkg).map(value => escapeHTML(value)).join('<br>'),
         `${originBadge(pkg.origin, escapeHTML)}<br><span class="tiny">${escapeHTML(pkg.origin.publisher_hint || pkg.origin.app_name || basisLabels[pkg.origin.basis])}</span>`,
         `${escapeHTML(classification[pkg.classification])}<br><span class="tiny">${pkg.disabled === true ? 'Disabled' : pkg.disabled === false ? 'Not disabled' : 'Disabled state not recorded'}</span>`,
         escapeHTML(pkg.installer ?? 'Not recorded'),
         apkBreakdown(pkg, escapeHTML, number),
-        pkg.findings.length ? `${number(pkg.findings.length)} review note(s)` : 'No inventory issues identified',
         `<button class="button small" data-package="${pkg.source_index}">Inspect record</button>`,
       ]));
     }

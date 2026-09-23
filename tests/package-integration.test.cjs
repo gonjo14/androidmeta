@@ -51,7 +51,7 @@ test('package view renders escaped names, versions and APK details, filters, and
   assert.doesNotMatch($('package-list').innerHTML,/<img src=x/);
   assert.match($('package-list').innerHTML,/1 base \+ 1 split/);
   assert.match($('package-list').innerHTML,/Language split/);
-  assert.match($('package-list').innerHTML,/v1\.2/);
+  assert.doesNotMatch($('package-list').innerHTML,/v1\.2|review note\(s\)|No inventory issues identified/);
   $('package-layout').value='multiple'; $('package-layout').handlers.change();
   assert.equal($('package-count').textContent,'1 matching packages');
   assert.equal(($('package-list').innerHTML.match(/<tr>/g)||[]).length,1);
