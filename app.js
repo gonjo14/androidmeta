@@ -1,6 +1,7 @@
 'use strict';
 // Shared by the UI and worker. The build includes this file in both contexts.
 const AnalysisConfig = Object.freeze({
+  ASSET_VERSION: '0.5.0',
   MAX_FILE_BYTES: 150 * 1024 * 1024,
   FILE_LIMIT_LABEL: '150 MiB',
   MAX_LINES: 10_000_000,
@@ -22,6 +23,12 @@ const AnalysisConfig = Object.freeze({
   MAX_SETTINGS_LINES: 25_000,
   MAX_SETTING_LINE_CHARS: 100_000,
   SETTINGS_PAGE_SIZE: 50,
+  MAX_GETPROP_BYTES: 2 * 1024 * 1024,
+  GETPROP_LIMIT_LABEL: '2 MiB',
+  MAX_GETPROP_RECORDS: 20_000,
+  MAX_GETPROP_LINES: 25_000,
+  MAX_GETPROP_RECORD_CHARS: 100_000,
+  GETPROP_PAGE_SIZE: 50,
 });
 
 // Metadata checks must run before reading bytes, on both sides of the worker.
@@ -32,12 +39,14 @@ function validateCapture(file, tool = 'logcat') {
   if (file.size === 0) return 'This file is empty. Choose a capture with data.';
   const packages = tool === 'packages';
   const settings = tool === 'settings';
-  const limit = settings ? AnalysisConfig.MAX_SETTINGS_BYTES : packages ? AnalysisConfig.MAX_PACKAGE_BYTES : AnalysisConfig.MAX_FILE_BYTES;
-  const label = settings ? AnalysisConfig.SETTINGS_LIMIT_LABEL : packages ? AnalysisConfig.PACKAGE_LIMIT_LABEL : AnalysisConfig.FILE_LIMIT_LABEL;
+  const properties = tool === 'getprop';
+  const limit = properties ? AnalysisConfig.MAX_GETPROP_BYTES : settings ? AnalysisConfig.MAX_SETTINGS_BYTES : packages ? AnalysisConfig.MAX_PACKAGE_BYTES : AnalysisConfig.MAX_FILE_BYTES;
+  const label = properties ? AnalysisConfig.GETPROP_LIMIT_LABEL : settings ? AnalysisConfig.SETTINGS_LIMIT_LABEL : packages ? AnalysisConfig.PACKAGE_LIMIT_LABEL : AnalysisConfig.FILE_LIMIT_LABEL;
   if (file.size > limit) {
     return `This file exceeds the ${label} limit. Choose a smaller capture.`;
   }
   if (packages) return /\.json$/i.test(file.name) ? null : 'Choose a packages.json inventory file.';
+  if (properties) return /\.txt$/i.test(file.name) ? null : 'Choose a getprop text export (.txt).';
   if (settings) return /\.txt$/i.test(file.name) ? null : 'Choose a settings_global.txt, settings_secure.txt, or settings_system.txt export.';
   if (!/\.(txt|log|zip)$/i.test(file.name)) return 'Choose a .txt, .log, or .zip file.';
   return null;
@@ -632,6 +641,229 @@ const SettingsAnalysis = (() => {
 })();
 
 ;
+// Pure, read-only analysis of the bracketed output of `adb shell getprop`.
+const GetpropAnalysis = (() => {
+  'use strict';
+  const VERSION = 1;
+  const sources = Object.freeze({
+    build: 'https://android.googlesource.com/platform/frameworks/base/+/main/core/java/android/os/Build.java',
+    init: 'https://android.googlesource.com/platform/system/core/+/main/init/README.md',
+    boot: 'https://android.googlesource.com/platform/external/avb/+/master/README.md',
+    lock: 'https://source.android.com/docs/core/architecture/bootloader/locking_unlocking',
+    adb: 'https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/daemon/main.cpp',
+    encryption: 'https://source.android.com/docs/security/features/encryption/file-based',
+    usb: 'https://android.googlesource.com/platform/system/core/+/6078805/rootdir/init.usb.rc',
+  });
+  const catalogue = new Map();
+  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  function add(key, label, category, type, source, extra = {}) {
+    catalogue.set(key, { label, category, type, source, ...extra });
+  }
+  for (const [key, label, category] of [
+    ['ro.product.manufacturer', 'Manufacturer', 'Device'], ['ro.product.brand', 'Brand', 'Device'],
+    ['ro.product.model', 'Model', 'Device'], ['ro.product.device', 'Device codename', 'Device'],
+    ['ro.product.name', 'Product name', 'Device'], ['ro.hardware', 'Hardware name', 'Device'],
+    ['ro.product.cpu.abilist', 'Supported CPU ABIs', 'Device'],
+    ['ro.build.id', 'Build ID', 'Build'], ['ro.build.display.id', 'Display build ID', 'Build'],
+    ['ro.build.fingerprint', 'Build fingerprint', 'Build'],
+    ['ro.build.version.release', 'Android release', 'Build'],
+    ['ro.build.version.incremental', 'Incremental build version', 'Build'],
+    ['ro.build.version.codename', 'Platform codename', 'Build'],
+  ]) add(key, label, category, 'text', sources.build);
+  add('ro.build.version.sdk', 'Android API level', 'Build', 'integer', sources.build);
+  add('ro.build.version.security_patch', 'Reported security patch level', 'Build', 'date', sources.build, { note: 'A reported patch date does not verify installed fixes or establish the capture date.' });
+  add('ro.build.type', 'Build type', 'Build', 'build-type', sources.build);
+  add('ro.build.tags', 'Build tags', 'Build', 'tags', sources.build, { note: 'Build tags are text claims and do not authenticate the signing key.' });
+  add('ro.boot.verifiedbootstate', 'Verified Boot state', 'Boot', 'verified-boot', sources.boot, { note: 'Reported boot state only; this text export is not hardware attestation.' });
+  add('ro.boot.flash.locked', 'Bootloader flash lock', 'Boot', 'lock', sources.lock);
+  add('ro.debuggable', 'Debuggable build flag', 'Debugging', 'boolean', sources.adb, { note: 'This is a build flag, separate from the Developer options switch. It does not prove root access.' });
+  add('ro.secure', 'ADB privilege-drop flag', 'Debugging', 'boolean', sources.adb, { note: 'In AOSP, this contributes to the ADB privilege policy. It is not an overall device security status.' });
+  add('ro.adb.secure', 'ADB authentication flag', 'Debugging', 'boolean', sources.adb, { note: 'Build mode, boot state, and implementation affect enforcement. Clients and authorizations are not listed here.' });
+  for (const key of ['service.adb.tcp.port', 'persist.adb.tcp.port']) add(key, 'Configured ADB TCP port', 'Debugging', 'port', sources.adb, { note: 'A configuration value does not establish a listening port. Modern wireless debugging can use other properties.' });
+  for (const [key, label] of [['sys.usb.config', 'Requested USB functions'], ['sys.usb.state', 'Reported USB functions'], ['persist.sys.usb.config', 'Persistent USB function preference']]) {
+    add(key, label, 'USB', 'usb', sources.usb, { note: 'AOSP reference configuration; vendor behaviour can differ. This value does not prove a connected or authorized ADB client.' });
+  }
+  add('ro.crypto.state', 'Reported encryption state', 'Encryption', 'encryption-state', sources.encryption, { note: 'This property does not verify protection of individual files or the current user-unlock state.' });
+  add('ro.crypto.type', 'Reported encryption type', 'Encryption', 'encryption-type', sources.encryption);
+
+  function definitionFor(key) {
+    if (catalogue.has(key)) return catalogue.get(key);
+    if (key.startsWith('init.svc.') && key.length > 9) return { label: `Service: ${key.slice(9)}`, category: 'Services', type: 'service', source: sources.init, note: 'One recorded service state. A stopped service can be normal; a restarting state alone does not prove a crash loop.' };
+    return null;
+  }
+  function categoryHint(key) {
+    if (/^init\./.test(key)) return 'Services';
+    if (/adb|debuggable|^debug\./.test(key)) return 'Debugging';
+    if (/usb/.test(key)) return 'USB';
+    if (/crypto|encrypt/.test(key)) return 'Encryption';
+    if (/^ro\.boot\.|boot\.reason|boot_completed/.test(key)) return 'Boot';
+    if (/build|security_patch/.test(key)) return 'Build';
+    if (/^ro\.product\.|hardware|board|soc\./.test(key)) return 'Device';
+    if (/wifi|bluetooth|radio|telephony|^gsm\.|^ril\.|^net\./.test(key)) return 'Connectivity';
+    if (/audio|media|camera|display|graphics|surfaceflinger/.test(key)) return 'Media & display';
+    if (/^dalvik\.|heap|dex|thermal|performance/.test(key)) return 'Runtime';
+    return 'Other';
+  }
+  function interpret(definition, raw) {
+    const value = raw.trim();
+    const ok = text => ({ text, valid: true });
+    const unsupported = () => ({ text: 'Value outside the supported interpretation; raw value retained', valid: false });
+    if (raw === '') return ok('Empty recorded value');
+    if (!value) return ok('Whitespace-only value recorded');
+    if (value === 'null') return ok('Literal null recorded; meaning not assumed');
+    if (!definition) return ok('Raw value; no documented explanation in this catalogue');
+    switch (definition.type) {
+      case 'text': return ok(`${definition.label} recorded`);
+      case 'boolean': return ['0', '1'].includes(value) ? ok(`Flag ${value === '1' ? 'on' : 'off'} (recorded)`) : unsupported();
+      case 'integer': return /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? ok(`API level ${Number(value)} recorded`) : unsupported();
+      case 'date': {
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00Z`) : null;
+        return date && Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value ? ok('Calendar date recorded as the patch level') : unsupported();
+      }
+      case 'build-type': return ['user', 'userdebug', 'eng'].includes(value) ? ok({ user: 'Production build type recorded', userdebug: 'Debug-capable user build recorded', eng: 'Engineering build recorded' }[value]) : unsupported();
+      case 'tags': return ok('Build-tag text recorded; signing authenticity unverified');
+      case 'verified-boot': return ['green', 'yellow', 'orange'].includes(value) ? ok({ green: 'Locked boot state with a non-user-set verification key reported', yellow: 'Locked boot state with a user-set verification key reported', orange: 'Unlocked boot state reported' }[value]) : unsupported();
+      case 'lock': return value === '1' ? ok('Locked flag recorded') : value === '0' ? ok('Unlocked flag recorded') : unsupported();
+      case 'encryption-state': return value === 'encrypted' ? ok('Encryption reported by the property') : value === 'unencrypted' ? ok('Unencrypted state reported by the property') : unsupported();
+      case 'encryption-type': return value === 'file' ? ok('File-based encryption reported') : unsupported();
+      case 'service': return ['running', 'stopped', 'stopping', 'restarting'].includes(value) ? ok(`Service ${value} at capture time`) : unsupported();
+      case 'usb': return /^[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*$/.test(value) ? ok('USB function list recorded') : unsupported();
+      case 'port': {
+        if (!/^-?\d+$/.test(value)) return unsupported();
+        const port = Number(value);
+        if (port === 0 || port === -1) return ok('No positive TCP port specified by this property');
+        return Number.isSafeInteger(port) && port > 0 && port <= 65535 ? ok(`TCP port ${port} configured; reachability unverified`) : unsupported();
+      }
+      default: return unsupported();
+    }
+  }
+  function reviewFor(key, value, definition, interpretation) {
+    if (!interpretation.valid) return 'The catalogue cannot interpret this value. Check the device or vendor definition.';
+    value = value.trim();
+    if (!value || value === 'null') return null;
+    if (key === 'ro.boot.verifiedbootstate' && ['orange', 'yellow'].includes(value)) return 'A custom-key or unlocked boot configuration is reported. Check whether this is intended.';
+    if (key === 'ro.boot.flash.locked' && value === '0') return 'An unlocked bootloader flag is recorded. Check whether this is intended.';
+    if (key === 'ro.debuggable' && value === '1') return 'Debug build capability is recorded. This can be intentional on development devices.';
+    if (['ro.secure', 'ro.adb.secure'].includes(key) && value === '0') return 'A less restrictive ADB flag is recorded. Its effect depends on the build and implementation.';
+    if (key === 'ro.build.type' && ['eng', 'userdebug'].includes(value)) return 'A development build type is recorded. Confirm that it matches the expected firmware.';
+    if (key === 'ro.build.tags' && value.split(',').some(tag => ['test-keys', 'dev-keys'].includes(tag.trim()))) return 'Development signing tags are recorded. Tags alone do not establish rooting or signing authenticity.';
+    if (definition?.type === 'port' && Number(value) > 0) return 'A positive ADB TCP port is configured. Verify whether network debugging is intended.';
+    if (definition?.type === 'usb' && value.split(',').includes('adb')) return 'The USB function list includes ADB. Check whether debugging is intended.';
+    if (definition?.type === 'service' && value === 'restarting') return 'This service was restarting in the snapshot. Repeated captures or logs are needed to establish a crash loop.';
+    if (key === 'ro.crypto.state' && value === 'unencrypted') return 'The property reports an unencrypted state. Verify the actual device configuration.';
+    return null;
+  }
+
+  function analyse(text, sourceFile = 'getprop.txt', progress = () => {}) {
+    if (typeof text !== 'string' || typeof sourceFile !== 'string') throw new Error('Provide a getprop text export and filename.');
+    if (new TextEncoder().encode(text).byteLength > AnalysisConfig.MAX_GETPROP_BYTES) throw new Error(`This property export exceeds ${AnalysisConfig.GETPROP_LIMIT_LABEL}.`);
+    if (text.includes('\0')) throw new Error('Export getprop as UTF-8 text; a NUL byte was found.');
+    const chunks = text.replace(/^\uFEFF/, '').split(/(\r\n|\n|\r)/), lines = [];
+    for (let i = 0; i < chunks.length; i += 2) {
+      if (i === chunks.length - 1 && chunks[i] === '') break;
+      lines.push({ text: chunks[i], eol: chunks[i + 1] || '' });
+    }
+    if (lines.length > AnalysisConfig.MAX_GETPROP_LINES) throw new Error('Too many property source lines. Reduce the export.');
+    const records = [], issues = [], frequencies = new Map();
+    let malformed = 0;
+    const opener = /^\[([A-Za-z0-9_.@:-]+)\]:[ \t]*\[/;
+    const closing = /\][ \t]*$/;
+    function issue(start, end, message) {
+      malformed += end - start + 1;
+      if (issues.length < 100) issues.push({ line: start + 1, end_line: end + 1, message });
+    }
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index].text;
+      if (line.length > AnalysisConfig.MAX_GETPROP_RECORD_CHARS) throw new Error(`Property source line ${index + 1} is too long.`);
+      if (!line.trim()) continue;
+      const match = opener.exec(line);
+      if (!match) { issue(index, index, 'Expected [property.name]: [value].'); continue; }
+      const start = index, key = match[1];
+      let raw = line;
+      let end = closing.exec(line);
+      while (!end && index + 1 < lines.length && !opener.test(lines[index + 1].text)) {
+        raw += lines[index].eol + lines[index + 1].text;
+        index++;
+        if (raw.length > AnalysisConfig.MAX_GETPROP_RECORD_CHARS) throw new Error(`Property starting at line ${start + 1} is too long.`);
+        end = closing.exec(lines[index].text);
+      }
+      if (!end) { issue(start, index, 'Unterminated property value; the next property, if present, is kept separate.'); continue; }
+      if (records.length >= AnalysisConfig.MAX_GETPROP_RECORDS) throw new Error('Too many property records. Reduce the export.');
+      const value = raw.slice(match[0].length, raw.length - end[0].length);
+      const definition = definitionFor(key), interpretation = interpret(definition, value);
+      records.push({ id: String(start + 1), key, value, raw, source_file: sourceFile, line: start + 1, end_line: index + 1,
+        prefix: key.split('.')[0], category: definition?.category || categoryHint(key), category_basis: definition ? 'catalogue' : 'name-hint',
+        label: definition?.label || key, known: Boolean(definition), interpretation: interpretation.text,
+        note: definition?.note || null, source: definition?.source || null,
+        review: reviewFor(key, value, definition, interpretation), duplicate: false,
+        service_state: definition?.type === 'service' && ['running', 'stopped', 'stopping', 'restarting'].includes(value.trim()) ? value.trim() : null,
+        value_state: value === '' ? 'empty' : value.trim() === 'null' ? 'literal-null' : 'recorded',
+      });
+      frequencies.set(key, (frequencies.get(key) || 0) + 1);
+      if (records.length % 500 === 0) progress(`Read ${records.length.toLocaleString('en-US')} properties…`);
+    }
+    if (!records.length) throw new Error('No [property.name]: [value] records found. Open the output of adb shell getprop.');
+    for (const row of records) row.duplicate = frequencies.get(row.key) > 1;
+    return { tool: 'getprop', version: VERSION, source_file: sourceFile, analyzed_at: new Date().toISOString(), records, issues,
+      counts: { records: records.length, distinct_keys: frequencies.size, physical_lines: lines.length,
+        explained: records.filter(row => row.known).length, raw_only: records.filter(row => !row.known).length,
+        review: records.filter(row => row.review || row.duplicate).length, duplicate_records: records.filter(row => row.duplicate).length,
+        empty: records.filter(row => row.value_state === 'empty').length, literal_null: records.filter(row => row.value_state === 'literal-null').length,
+        multiline: records.filter(row => row.end_line > row.line).length, malformed_lines: malformed,
+        services: records.filter(row => row.key.startsWith('init.svc.') && row.key.length > 9).length,
+        service_running: records.filter(row => row.service_state === 'running').length,
+        service_stopped: records.filter(row => row.service_state === 'stopped').length,
+        service_restarting: records.filter(row => row.service_state === 'restarting').length,
+      },
+      notes: [
+        'Properties are recorded configuration and state. The analysis time is not the capture time, and this export does not authenticate the device.',
+        'Explained means a key has a documented interpretation. Raw values are keys outside this dictionary; their categories are name hints.',
+        'Review notes identify limited configuration or data checks. Zero notes does not establish device safety or absence of root or malware.',
+        'A stopped init service can be normal. A single snapshot does not show how often a service restarts.',
+        'Missing properties remain missing. Empty strings and literal null are preserved. Duplicate keys keep every record without choosing a winner.',
+        'Multiline values retain their line endings and source ranges. Unescaped getprop text can be ambiguous if a value itself contains record-shaped lines.',
+        'Values, downloads, and optional history can include identifiers. Analysis runs in this browser; no properties are uploaded or changed on the device.',
+      ],
+    };
+  }
+  function matches(row, filters = {}) {
+    if (filters.prefix && row.prefix !== filters.prefix) return false;
+    if (filters.category && row.category !== filters.category) return false;
+    const status = filters.status;
+    if (status === 'review' && !(row.review || row.duplicate)) return false;
+    if (status === 'explained' && !row.known) return false;
+    if (status === 'raw' && row.known) return false;
+    if (status === 'duplicates' && !row.duplicate) return false;
+    if (status === 'multiline' && row.line === row.end_line) return false;
+    if (['empty', 'literal-null'].includes(status) && row.value_state !== status) return false;
+    if (status?.startsWith('service-') && row.service_state !== status.slice(8)) return false;
+    const query = String(filters.query || '').trim().toLowerCase();
+    return !query || `${row.key} ${row.value} ${row.label} ${row.interpretation} ${row.note || ''} ${row.review || ''}`.toLowerCase().includes(query);
+  }
+  function page(records, filters = {}, requested = 0) {
+    const filtered = records.filter(row => matches(row, filters));
+    const pages = Math.max(1, Math.ceil(filtered.length / AnalysisConfig.GETPROP_PAGE_SIZE));
+    const current = Math.min(pages - 1, Math.max(0, Math.floor(Number(requested)) || 0));
+    return { total: filtered.length, page: current, pages, records: filtered.slice(current * AnalysisConfig.GETPROP_PAGE_SIZE, (current + 1) * AnalysisConfig.GETPROP_PAGE_SIZE) };
+  }
+  function filteredReport(summary, filters = {}) {
+    const selection = Object.fromEntries(['query', 'prefix', 'category', 'status'].map(key => [key, typeof filters[key] === 'string' ? filters[key] : '']));
+    const records = summary.records.filter(row => matches(row, selection));
+    return { tool: 'getprop-filtered', version: VERSION, source_file: summary.source_file, analyzed_at: summary.analyzed_at, exported_at: new Date().toISOString(), filters: selection, total_records: summary.records.length, matching_records: records.length, records, notes: summary.notes };
+  }
+  function isSummary(value) {
+    return object(value) && value.tool === 'getprop' && value.version === VERSION && typeof value.source_file === 'string' && typeof value.analyzed_at === 'string'
+      && object(value.counts) && Object.values(value.counts).every(n => Number.isSafeInteger(n) && n >= 0)
+      && Array.isArray(value.records) && value.records.length > 0 && value.records.length <= AnalysisConfig.MAX_GETPROP_RECORDS
+      && value.records.every(row => object(row) && ['id', 'key', 'value', 'raw', 'source_file', 'prefix', 'category', 'label', 'interpretation'].every(key => typeof row[key] === 'string')
+        && Number.isSafeInteger(row.line) && row.line > 0 && Number.isSafeInteger(row.end_line) && row.end_line >= row.line)
+      && value.counts.records === value.records.length && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string')
+      && Array.isArray(value.issues) && value.issues.length <= 100 && value.issues.every(issue => object(issue) && Number.isSafeInteger(issue.line) && Number.isSafeInteger(issue.end_line) && typeof issue.message === 'string');
+  }
+  return { analyse, matches, page, filteredReport, isSummary };
+})();
+
+;
 const PackagesView = (() => {
   'use strict';
   const classification = { system: 'System (reported)', 'third-party': 'Third-party (reported)', unknown: 'Not established', conflicting: 'Conflicting flags' };
@@ -927,6 +1159,120 @@ const SettingsView = (() => {
 })();
 
 ;
+const GetpropView = (() => {
+  'use strict';
+  const filterKeys = ['query', 'prefix', 'category', 'status'];
+  const status = row => row.duplicate ? 'Duplicate key' : row.review ? 'Review note' : row.known ? 'Explained' : 'Raw value';
+  const location = row => row.end_line === row.line ? `Line ${row.line}` : `Lines ${row.line}–${row.end_line}`;
+
+  function render(summary, view, helpers) {
+    const { $, escapeHTML, number, stat, panel, table, notes, download } = helpers;
+    const counts = summary.counts;
+    const options = values => [...new Set(values)].sort().map(value => `<option value="${escapeHTML(value)}">${escapeHTML(value)}</option>`).join('');
+    const inspect = row => `<button class="button small" data-property="${escapeHTML(row.id)}">${location(row)}</button>`;
+    function overview(keys) {
+      return table(['Property', 'Recorded value', 'Evidence'], keys.map(([key, label]) => {
+        const records = summary.records.filter(row => row.key === key);
+        if (!records.length) return [escapeHTML(label), 'Not in this export', '—'];
+        if (records.length > 1) return [escapeHTML(label), `${number(records.length)} records; search ${escapeHTML(key)} to inspect all values.`, '<span class="badge warn">Duplicate key</span>'];
+        const row = records[0];
+        return [escapeHTML(label), `<code>${escapeHTML(row.value === '' ? '(empty string)' : row.value.slice(0, 180))}${row.value.length > 180 ? '…' : ''}</code>`, inspect(row)];
+      }));
+    }
+    $('getprop-results').innerHTML = `
+      <div class="stats">
+        ${stat('Properties', counts.records, `${number(counts.distinct_keys)} distinct keys`)}
+        ${stat('Explained', counts.explained, `${number(counts.raw_only)} searchable raw values`)}
+        ${stat('Running services', counts.service_running, `${number(counts.service_stopped)} stopped · ${number(counts.service_restarting)} restarting`)}
+        ${stat('Review notes', counts.review, 'Limited checks; no overall safety verdict')}
+      </div>
+      <div class="notice"><strong>Recorded properties from your export.</strong><p>Explained means the property has a documented meaning. Raw values remain available even when the dictionary has no explanation. Review notes highlight configuration or data to inspect.</p></div>
+      <div class="split">
+        ${panel('Device and build', 'These are reported values from the file.', overview([
+          ['ro.product.manufacturer', 'Manufacturer'], ['ro.product.model', 'Model'], ['ro.product.device', 'Device codename'],
+          ['ro.build.version.release', 'Android release'], ['ro.build.version.sdk', 'API level'],
+          ['ro.build.version.security_patch', 'Reported security patch'], ['ro.build.type', 'Build type'],
+        ]))}
+        ${panel('Boot and debugging', 'Inspect a source line for its meaning and limitations.', overview([
+          ['ro.boot.verifiedbootstate', 'Verified Boot'], ['ro.boot.flash.locked', 'Bootloader lock flag'],
+          ['ro.debuggable', 'Debuggable build flag'], ['ro.adb.secure', 'ADB authentication flag'],
+          ['ro.crypto.state', 'Encryption state'], ['ro.crypto.type', 'Encryption type'], ['sys.usb.state', 'USB function list'],
+        ]))}
+      </div>
+      ${counts.malformed_lines ? panel('Skipped source lines', `${number(counts.malformed_lines)} lines could not be parsed. Up to 100 source ranges are listed.`, notes(summary.issues.map(issue => `${location(issue)}: ${issue.message}`))) : ''}
+      <section class="panel">
+        <div class="panel-header"><h2>Property explorer</h2><button class="button small" id="getprop-show-review">Show review notes</button></div>
+        <div class="filters">
+          <div class="field"><label for="prop-query">Search keys and values</label><input id="prop-query" type="search" placeholder="boot, adb, model, service name…"></div>
+          <div class="field"><label for="prop-prefix">Property prefix</label><select id="prop-prefix"><option value="">All prefixes</option>${options(summary.records.map(row => row.prefix))}</select></div>
+          <div class="field"><label for="prop-category">Category</label><select id="prop-category"><option value="">All categories</option>${options(summary.records.map(row => row.category))}</select></div>
+          <div class="field"><label for="prop-status">Evidence filter</label><select id="prop-status"><option value="">All properties</option><option value="review">Review notes / duplicate keys</option><option value="explained">Has a documented explanation</option><option value="raw">Raw value only</option><option value="service-running">Running services</option><option value="service-stopped">Stopped services</option><option value="service-restarting">Restarting services</option><option value="service-stopping">Stopping services</option><option value="multiline">Multiline values</option><option value="empty">Empty values</option><option value="literal-null">Literal null</option><option value="duplicates">Duplicate keys</option></select></div>
+        </div>
+        <div class="filter-footer"><span id="getprop-count" role="status"></span><div class="button-row"><button class="button small" id="getprop-clear">Clear filters</button><button class="button small" id="getprop-export">Export matching JSON</button></div></div>
+        <div id="getprop-list"></div>
+        <div class="pagination"><span id="getprop-page"></span><div class="button-row"><button class="button small" id="getprop-prev">Previous</button><button class="button small" id="getprop-next">Next</button></div></div>
+      </section>
+      ${panel('Understanding the result', '', notes(summary.notes))}`;
+    function updateRows() {
+      const result = GetpropAnalysis.page(summary.records, view.filters, view.page);
+      view.page = result.page;
+      $('getprop-count').textContent = `${number(result.total)} matching properties`;
+      $('getprop-page').textContent = `Page ${number(result.page + 1)} of ${number(result.pages)}`;
+      $('getprop-prev').disabled = result.page === 0;
+      $('getprop-next').disabled = result.page + 1 >= result.pages;
+      $('getprop-list').innerHTML = table(['Property', 'Recorded value', 'Meaning', 'Evidence'], result.records.map(row => [
+        `<strong>${escapeHTML(row.key)}</strong><br><span class="tiny">${escapeHTML(row.category)}${row.category_basis === 'name-hint' ? ' (name hint)' : ''}</span>`,
+        `<code>${escapeHTML(row.value === '' ? '(empty string)' : row.value.slice(0, 180))}${row.value.length > 180 ? '…' : ''}</code>${row.end_line > row.line ? '<br><span class="badge neutral">Multiline value</span>' : ''}`,
+        `<span class="badge ${row.review || row.duplicate ? 'warn' : 'neutral'}">${status(row)}</span><p class="tiny">${escapeHTML(row.interpretation)}</p>`,
+        inspect(row),
+      ]));
+    }
+    for (const key of filterKeys) {
+      const input = $(`prop-${key}`);
+      input.value = view.filters[key] || '';
+      input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', () => { view.filters[key] = input.value; view.page = 0; updateRows(); });
+    }
+    function select(filters) {
+      view.filters = filters; view.page = 0;
+      for (const key of filterKeys) $(`prop-${key}`).value = filters[key] || '';
+      updateRows();
+    }
+    $('getprop-clear').onclick = () => select({});
+    $('getprop-show-review').onclick = () => { select({ status: 'review' }); $('prop-status').focus(); };
+    $('getprop-prev').onclick = () => { view.page--; updateRows(); };
+    $('getprop-next').onclick = () => { view.page++; updateRows(); };
+    $('getprop-export').onclick = () => download(new Blob([JSON.stringify(GetpropAnalysis.filteredReport(summary, view.filters), null, 2)], { type: 'application/json' }), 'getprop-filtered.json');
+    updateRows();
+  }
+  function showDetails(summary, id, helpers) {
+    const row = summary?.records.find(record => record.id === id);
+    if (!row) return;
+    const { $, escapeHTML, panel, table } = helpers;
+    $('property-title').textContent = row.key;
+    $('property-meta').textContent = `${row.source_file} · ${location(row)}`;
+    $('property-content').innerHTML = panel('Recorded value', 'The full value, including any embedded line breaks.', `<pre>${escapeHTML(row.value === '' ? '(empty string)' : row.value)}</pre>`)
+      + panel('Meaning', '', table(['Field', 'Explanation'], [
+        ['Property', escapeHTML(row.label)], ['Status', status(row)], ['Interpretation', escapeHTML(row.interpretation)],
+        ['Context', escapeHTML(row.note || 'No additional documented context for this key.')],
+        ['Review note', escapeHTML(row.review || 'No review note from these limited checks')],
+        ['Duplicate key', row.duplicate ? 'Every duplicate is retained. No winning value is chosen.' : 'No'],
+      ]) + (typeof row.source === 'string' && /^https:\/\//.test(row.source) ? `<p class="hint"><a href="${escapeHTML(row.source)}" target="_blank" rel="noopener noreferrer">Android reference</a></p>` : ''))
+      + panel('Source evidence', location(row), `<pre>${escapeHTML(row.raw)}</pre>`);
+    if (!$('property-dialog').open) $('property-dialog').showModal();
+  }
+  function markdown(summary) {
+    const block = value => String(value ?? '').split(/\r\n|\r|\n/).map(line => `    ${line}`).join('\n');
+    const lines = ['# Android system properties', '', 'Source:', '', block(summary.source_file), '', `Analysed: ${summary.analyzed_at}`, '', '## Counts', ''];
+    for (const [key, value] of Object.entries(summary.counts)) lines.push(`- ${key.replace(/_/g, ' ')}: ${value}`);
+    lines.push('', '## Notes', '', ...summary.notes.map(note => `- ${note}`), '', '## Property evidence', '');
+    for (const row of summary.records) lines.push(block(`${location(row)}\n${row.raw}\nMeaning: ${row.interpretation}\nStatus: ${status(row)}${row.note ? `\nContext: ${row.note}` : ''}${row.review ? `\nReview: ${row.review}` : ''}${row.source ? `\nReference: ${row.source}` : ''}`), '');
+    if (summary.issues.length) lines.push('## Skipped source ranges (up to 100)', '', ...summary.issues.map(issue => block(`${location(issue)}: ${issue.message}`)));
+    return lines.join('\n');
+  }
+  return { render, showDetails, markdown };
+})();
+
+;
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -937,8 +1283,8 @@ const SettingsView = (() => {
   function createToolState() {
     return { worker: null, summary: null, tab: 'overview', busy: false, fileSize: 0, page: 0, queryId: 0, filters: {}, sourceFiles: [] };
   }
-  const state = { bugreport: createToolState(), logcat: createToolState(), packages: createToolState(), settings: createToolState() };
-  const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser', packages: 'Package Analyser', settings: 'Settings Analyser' };
+  const state = { bugreport: createToolState(), logcat: createToolState(), packages: createToolState(), settings: createToolState(), getprop: createToolState() };
+  const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser', packages: 'Package Analyser', settings: 'Settings Analyser', getprop: 'System Properties' };
   const historyKey = 'android_tools_history_v2';
   let route = 'home', toastTimer = null, queryTimer = null, contextTool = null, contextTarget = 1;
   let contextRequestId = 0;
@@ -966,6 +1312,7 @@ const SettingsView = (() => {
     const log = tool === 'logcat';
     const packages = tool === 'packages';
     const settings = tool === 'settings';
+    const properties = tool === 'getprop';
     const view = {
       logcat: {
         eyebrow: 'LOGCAT INVESTIGATION', noun: 'logcat file',
@@ -995,19 +1342,27 @@ const SettingsView = (() => {
         open: 'Load one to three key=value text exports. Each filename identifies its namespace.',
         investigate: 'Search every recorded value, inspect documented keys, and review debugging flags or duplicate records.',
       },
+      getprop: {
+        eyebrow: 'ANDROID SYSTEM PROPERTIES', noun: 'getprop.txt',
+        subtitle: 'Understand device, build, boot, debugging, and service properties from a saved export.',
+        upload: 'Open the text output of adb shell getprop. Multiline values are supported.',
+        open: 'Load a UTF-8 .txt export containing [property.name]: [value] records.',
+        investigate: 'Read the device overview, search every value, and inspect explanations with their source lines.',
+      },
     }[tool];
     const uploadHint = packages
       ? `JSON · UP TO ${AnalysisConfig.PACKAGE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_PACKAGES)} PACKAGES · PROCESSED LOCALLY`
       : settings ? `1–3 TXT FILES · UP TO ${AnalysisConfig.SETTINGS_LIMIT_LABEL} · PROCESSED LOCALLY`
+      : properties ? `TXT · UP TO ${AnalysisConfig.GETPROP_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_GETPROP_RECORDS)} PROPERTIES · PROCESSED LOCALLY`
       : `TXT, LOG, ZIP · UP TO ${AnalysisConfig.FILE_LIMIT_LABEL} / ${number(AnalysisConfig.MAX_LINES)} LINES · PROCESSED LOCALLY`;
     $(tool).innerHTML = `
       <div class="page-heading"><div><div class="eyebrow">${view.eyebrow}</div><h1>${titles[tool]}</h1><p class="subtitle">${view.subtitle}</p></div><button class="button" data-demo="${tool}">Try a sample</button></div>
       <div id="${tool}-upload" class="upload-panel" data-drop="${tool}">
         <div class="upload-icon">${icon('upload')}</div><h2>Drop your ${view.noun} here</h2><p>${view.upload}</p>
         <div class="button-row"><button class="button primary" data-browse="${tool}">${icon('file')}Choose ${settings ? 'files' : 'file'}</button></div><p class="upload-hint">${uploadHint}</p>
-        <input id="${tool}-file" type="file" accept="${packages ? '.json' : settings ? '.txt' : '.txt,.log,.zip'}" ${settings ? 'multiple' : ''} hidden aria-label="Choose ${view.noun}">
+        <input id="${tool}-file" type="file" accept="${packages ? '.json' : settings || properties ? '.txt' : '.txt,.log,.zip'}" ${settings ? 'multiple' : ''} hidden aria-label="Choose ${view.noun}">
       </div>
-      <label class="remember"><input id="${tool}-remember" type="checkbox">Remember analysis summaries in this browser${settings ? ' (includes raw settings and identifiers)' : ''}</label>
+      <label class="remember"><input id="${tool}-remember" type="checkbox">Remember analysis summaries in this browser${settings || properties ? ' (includes raw values and identifiers)' : ''}</label>
       <div id="${tool}-error" class="notice error" role="alert" hidden></div>
       <div id="${tool}-loading" class="loading" hidden><span class="spinner" aria-hidden="true"></span><span id="${tool}-progress" class="loading-text" role="status" aria-live="polite">Reading your file…</span><button class="button small" data-cancel="${tool}">Cancel</button></div>
       <div id="${tool}-archive" class="archive-picker" hidden><h2>Choose a file from this archive</h2><p>The archive contains several text files. Select the capture to analyse.</p><label class="field-label" for="${tool}-entry">File in archive</label><select id="${tool}-entry"></select><div class="button-row"><button class="button primary" data-entry="${tool}">Analyse selected file</button><button class="button" data-cancel="${tool}">Cancel</button></div></div>
@@ -1046,6 +1401,7 @@ const SettingsView = (() => {
     $(tool).setAttribute('aria-busy', 'false');
     if (tool === 'packages' && $('package-dialog').open) $('package-dialog').close();
     if (tool === 'settings' && $('setting-dialog').open) $('setting-dialog').close();
+    if (tool === 'getprop' && $('property-dialog').open) $('property-dialog').close();
     if (contextTool === tool) {
       contextRequestId++;
       contextTool = null;
@@ -1075,7 +1431,7 @@ const SettingsView = (() => {
     let worker;
     try {
       // Relative to the page, including a GitHub Pages repository subpath.
-      worker = new Worker(new URL('analysis-worker.js', document.baseURI));
+      worker = new Worker(new URL(`analysis-worker.js?v=${AnalysisConfig.ASSET_VERSION}`, document.baseURI));
     } catch (_) { failOpen(tool, 'The analysis worker could not start. Open the hosted site or use a local HTTP server, with all site files in the same folder.'); return; }
     state[tool].worker = worker;
     worker.onmessage = ({ data }) => { if (state[tool].worker === worker) handleMessage(tool, data); };
@@ -1154,6 +1510,8 @@ const SettingsView = (() => {
       PackagesView.render(s, state.packages, packageUI);
     } else if (tool === 'settings') {
       SettingsView.render(s, state.settings, packageUI);
+    } else if (tool === 'getprop') {
+      GetpropView.render(s, state.getprop, packageUI);
     } else if (tool === 'logcat') {
       el.innerHTML = `<div class="stats">${stat('Log entries', s.parsed_records, `${number(s.physical_lines)} source lines`)}${stat('Error records', s.levels.E, 'Priority E · not all are crashes', s.levels.E ? 'danger' : '')}${stat('Warning records', s.levels.W, 'Priority W', s.levels.W ? 'warn' : '')}${stat('Crash markers', s.counts.native + s.counts.java, `${number(s.counts.anr)} ANR markers`, s.counts.native + s.counts.java ? 'danger' : '')}</div>${tabs(tool, [['overview', 'Overview'], ['findings', `Findings · ${number(s.finding_groups)}`], ['explorer', 'Log explorer']])}<div id="logcat-tab-content"></div>`;
       if (state[tool].tab === 'overview') renderLogOverview(s);
@@ -1304,6 +1662,7 @@ const SettingsView = (() => {
   function markdown(s) {
     if (s.tool === 'packages') return PackagesView.markdown(s);
     if (s.tool === 'settings') return SettingsView.markdown(s);
+    if (s.tool === 'getprop') return GetpropView.markdown(s);
     const block = text => String(text ?? '').split('\n').map(line => `    ${line}`).join('\n');
     const lines = [`# ${titles[s.tool] || 'Bug Report Analyser'} report`, '', 'Source:', '', block(s.source_file), '', `Analysed: ${s.analyzed_at}`, '', '## Counts', ''];
     for (const [name, value] of Object.entries(s.counts)) lines.push(`- ${name.replace(/_/g, ' ')}: ${value}`);
@@ -1336,7 +1695,7 @@ const SettingsView = (() => {
         const legacy = JSON.parse(localStorage.getItem('bugreport_analyzer_history_v1') || '[]');
         if (Array.isArray(legacy)) value = legacy.filter(e => e?.summary?.counts && e.summary.battery_diagnosis && e.summary.crash_diagnosis && e.summary.stalkerware_indicators).map(e => ({ ...e, summary: { ...e.summary, tool: 'bugreport', coverage: { sectioned: e.summary.sections_found?.[0] !== 'FULL_TEXT', battery: Boolean(e.summary.wakelocks?.length), packages: Boolean(e.summary.stalkerware_indicators.contributors?.length) }, notes: ['Saved by the previous analyser. Reopen the capture to refresh coverage and run the updated checks.'] } }));
       }
-      const valid = Array.isArray(value) ? value.filter(e => e?.summary && typeof e.summary.source_file === 'string' && e.summary.counts && Object.keys(titles).includes(e.summary.tool) && (e.summary.tool !== 'packages' || PackageAnalysis.isSummary(e.summary)) && (e.summary.tool !== 'settings' || SettingsAnalysis.isSummary(e.summary))) : [];
+      const valid = Array.isArray(value) ? value.filter(e => e?.summary && typeof e.summary.source_file === 'string' && e.summary.counts && Object.keys(titles).includes(e.summary.tool) && (e.summary.tool !== 'packages' || PackageAnalysis.isSummary(e.summary)) && (e.summary.tool !== 'settings' || SettingsAnalysis.isSummary(e.summary)) && (e.summary.tool !== 'getprop' || GetpropAnalysis.isSummary(e.summary))) : [];
       return valid.slice(0, 10).map(entry => entry.summary.tool === 'packages' ? { ...entry, summary: PackageAnalysis.withOrigins(entry.summary) } : entry);
     } catch (_) { return []; }
   }
@@ -1358,6 +1717,11 @@ const SettingsView = (() => {
   }
 
   function demo(tool) {
+    if (tool === 'getprop') {
+      const sample = '[ro.product.manufacturer]: [Example]\n[ro.product.model]: [Demo device]\n[ro.build.version.release]: [16]\n[ro.build.version.sdk]: [36]\n[ro.build.version.security_patch]: [2026-01-01]\n[ro.build.type]: [userdebug]\n[ro.debuggable]: [1]\n[ro.boot.verifiedbootstate]: [orange]\n[ro.boot.flash.locked]: [0]\n[init.svc.demo]: [running]\n[init.svc.optional]: [stopped]\n[persist.example.history]: [first event\nsecond event]\n[vendor.example.empty]: []\n';
+      openFile(tool, new File([sample], 'sample-getprop.txt', { type: 'text/plain' }));
+      return;
+    }
     if (tool === 'settings') {
       const samples = {
         global: 'adb_enabled=0\nadb_wifi_enabled=1\ndevelopment_settings_enabled=1\nauto_time=1\ndebug_app=null\nwindow_animation_scale=0.5\n',
@@ -1415,6 +1779,7 @@ const SettingsView = (() => {
     if (d.context) openContext(d.tool, Number(d.context));
     if (d.package != null) PackagesView.showDetails(state.packages.summary, d.package, packageUI);
     if (d.setting != null) SettingsView.showDetails(state.settings.summary, d.setting, packageUI);
+    if (d.property != null) GetpropView.showDetails(state.getprop.summary, d.property, packageUI);
     if (d.close) $(d.close).close();
     if (d.download) {
       const s = state[d.download].summary; if (!s) return;

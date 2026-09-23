@@ -14,6 +14,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 ;
 // Shared by the UI and worker. The build includes this file in both contexts.
 const AnalysisConfig = Object.freeze({
+  ASSET_VERSION: '0.5.0',
   MAX_FILE_BYTES: 150 * 1024 * 1024,
   FILE_LIMIT_LABEL: '150 MiB',
   MAX_LINES: 10_000_000,
@@ -35,6 +36,12 @@ const AnalysisConfig = Object.freeze({
   MAX_SETTINGS_LINES: 25_000,
   MAX_SETTING_LINE_CHARS: 100_000,
   SETTINGS_PAGE_SIZE: 50,
+  MAX_GETPROP_BYTES: 2 * 1024 * 1024,
+  GETPROP_LIMIT_LABEL: '2 MiB',
+  MAX_GETPROP_RECORDS: 20_000,
+  MAX_GETPROP_LINES: 25_000,
+  MAX_GETPROP_RECORD_CHARS: 100_000,
+  GETPROP_PAGE_SIZE: 50,
 });
 
 // Metadata checks must run before reading bytes, on both sides of the worker.
@@ -45,12 +52,14 @@ function validateCapture(file, tool = 'logcat') {
   if (file.size === 0) return 'This file is empty. Choose a capture with data.';
   const packages = tool === 'packages';
   const settings = tool === 'settings';
-  const limit = settings ? AnalysisConfig.MAX_SETTINGS_BYTES : packages ? AnalysisConfig.MAX_PACKAGE_BYTES : AnalysisConfig.MAX_FILE_BYTES;
-  const label = settings ? AnalysisConfig.SETTINGS_LIMIT_LABEL : packages ? AnalysisConfig.PACKAGE_LIMIT_LABEL : AnalysisConfig.FILE_LIMIT_LABEL;
+  const properties = tool === 'getprop';
+  const limit = properties ? AnalysisConfig.MAX_GETPROP_BYTES : settings ? AnalysisConfig.MAX_SETTINGS_BYTES : packages ? AnalysisConfig.MAX_PACKAGE_BYTES : AnalysisConfig.MAX_FILE_BYTES;
+  const label = properties ? AnalysisConfig.GETPROP_LIMIT_LABEL : settings ? AnalysisConfig.SETTINGS_LIMIT_LABEL : packages ? AnalysisConfig.PACKAGE_LIMIT_LABEL : AnalysisConfig.FILE_LIMIT_LABEL;
   if (file.size > limit) {
     return `This file exceeds the ${label} limit. Choose a smaller capture.`;
   }
   if (packages) return /\.json$/i.test(file.name) ? null : 'Choose a packages.json inventory file.';
+  if (properties) return /\.txt$/i.test(file.name) ? null : 'Choose a getprop text export (.txt).';
   if (settings) return /\.txt$/i.test(file.name) ? null : 'Choose a settings_global.txt, settings_secure.txt, or settings_system.txt export.';
   if (!/\.(txt|log|zip)$/i.test(file.name)) return 'Choose a .txt, .log, or .zip file.';
   return null;
@@ -642,6 +651,229 @@ const SettingsAnalysis = (() => {
       && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string') && Array.isArray(value.issues) && value.issues.every(isObject);
   }
   return { namespaceForFile, validateFiles, analyse, matches, page, filteredReport, isSummary };
+})();
+
+;
+// Pure, read-only analysis of the bracketed output of `adb shell getprop`.
+const GetpropAnalysis = (() => {
+  'use strict';
+  const VERSION = 1;
+  const sources = Object.freeze({
+    build: 'https://android.googlesource.com/platform/frameworks/base/+/main/core/java/android/os/Build.java',
+    init: 'https://android.googlesource.com/platform/system/core/+/main/init/README.md',
+    boot: 'https://android.googlesource.com/platform/external/avb/+/master/README.md',
+    lock: 'https://source.android.com/docs/core/architecture/bootloader/locking_unlocking',
+    adb: 'https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/daemon/main.cpp',
+    encryption: 'https://source.android.com/docs/security/features/encryption/file-based',
+    usb: 'https://android.googlesource.com/platform/system/core/+/6078805/rootdir/init.usb.rc',
+  });
+  const catalogue = new Map();
+  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  function add(key, label, category, type, source, extra = {}) {
+    catalogue.set(key, { label, category, type, source, ...extra });
+  }
+  for (const [key, label, category] of [
+    ['ro.product.manufacturer', 'Manufacturer', 'Device'], ['ro.product.brand', 'Brand', 'Device'],
+    ['ro.product.model', 'Model', 'Device'], ['ro.product.device', 'Device codename', 'Device'],
+    ['ro.product.name', 'Product name', 'Device'], ['ro.hardware', 'Hardware name', 'Device'],
+    ['ro.product.cpu.abilist', 'Supported CPU ABIs', 'Device'],
+    ['ro.build.id', 'Build ID', 'Build'], ['ro.build.display.id', 'Display build ID', 'Build'],
+    ['ro.build.fingerprint', 'Build fingerprint', 'Build'],
+    ['ro.build.version.release', 'Android release', 'Build'],
+    ['ro.build.version.incremental', 'Incremental build version', 'Build'],
+    ['ro.build.version.codename', 'Platform codename', 'Build'],
+  ]) add(key, label, category, 'text', sources.build);
+  add('ro.build.version.sdk', 'Android API level', 'Build', 'integer', sources.build);
+  add('ro.build.version.security_patch', 'Reported security patch level', 'Build', 'date', sources.build, { note: 'A reported patch date does not verify installed fixes or establish the capture date.' });
+  add('ro.build.type', 'Build type', 'Build', 'build-type', sources.build);
+  add('ro.build.tags', 'Build tags', 'Build', 'tags', sources.build, { note: 'Build tags are text claims and do not authenticate the signing key.' });
+  add('ro.boot.verifiedbootstate', 'Verified Boot state', 'Boot', 'verified-boot', sources.boot, { note: 'Reported boot state only; this text export is not hardware attestation.' });
+  add('ro.boot.flash.locked', 'Bootloader flash lock', 'Boot', 'lock', sources.lock);
+  add('ro.debuggable', 'Debuggable build flag', 'Debugging', 'boolean', sources.adb, { note: 'This is a build flag, separate from the Developer options switch. It does not prove root access.' });
+  add('ro.secure', 'ADB privilege-drop flag', 'Debugging', 'boolean', sources.adb, { note: 'In AOSP, this contributes to the ADB privilege policy. It is not an overall device security status.' });
+  add('ro.adb.secure', 'ADB authentication flag', 'Debugging', 'boolean', sources.adb, { note: 'Build mode, boot state, and implementation affect enforcement. Clients and authorizations are not listed here.' });
+  for (const key of ['service.adb.tcp.port', 'persist.adb.tcp.port']) add(key, 'Configured ADB TCP port', 'Debugging', 'port', sources.adb, { note: 'A configuration value does not establish a listening port. Modern wireless debugging can use other properties.' });
+  for (const [key, label] of [['sys.usb.config', 'Requested USB functions'], ['sys.usb.state', 'Reported USB functions'], ['persist.sys.usb.config', 'Persistent USB function preference']]) {
+    add(key, label, 'USB', 'usb', sources.usb, { note: 'AOSP reference configuration; vendor behaviour can differ. This value does not prove a connected or authorized ADB client.' });
+  }
+  add('ro.crypto.state', 'Reported encryption state', 'Encryption', 'encryption-state', sources.encryption, { note: 'This property does not verify protection of individual files or the current user-unlock state.' });
+  add('ro.crypto.type', 'Reported encryption type', 'Encryption', 'encryption-type', sources.encryption);
+
+  function definitionFor(key) {
+    if (catalogue.has(key)) return catalogue.get(key);
+    if (key.startsWith('init.svc.') && key.length > 9) return { label: `Service: ${key.slice(9)}`, category: 'Services', type: 'service', source: sources.init, note: 'One recorded service state. A stopped service can be normal; a restarting state alone does not prove a crash loop.' };
+    return null;
+  }
+  function categoryHint(key) {
+    if (/^init\./.test(key)) return 'Services';
+    if (/adb|debuggable|^debug\./.test(key)) return 'Debugging';
+    if (/usb/.test(key)) return 'USB';
+    if (/crypto|encrypt/.test(key)) return 'Encryption';
+    if (/^ro\.boot\.|boot\.reason|boot_completed/.test(key)) return 'Boot';
+    if (/build|security_patch/.test(key)) return 'Build';
+    if (/^ro\.product\.|hardware|board|soc\./.test(key)) return 'Device';
+    if (/wifi|bluetooth|radio|telephony|^gsm\.|^ril\.|^net\./.test(key)) return 'Connectivity';
+    if (/audio|media|camera|display|graphics|surfaceflinger/.test(key)) return 'Media & display';
+    if (/^dalvik\.|heap|dex|thermal|performance/.test(key)) return 'Runtime';
+    return 'Other';
+  }
+  function interpret(definition, raw) {
+    const value = raw.trim();
+    const ok = text => ({ text, valid: true });
+    const unsupported = () => ({ text: 'Value outside the supported interpretation; raw value retained', valid: false });
+    if (raw === '') return ok('Empty recorded value');
+    if (!value) return ok('Whitespace-only value recorded');
+    if (value === 'null') return ok('Literal null recorded; meaning not assumed');
+    if (!definition) return ok('Raw value; no documented explanation in this catalogue');
+    switch (definition.type) {
+      case 'text': return ok(`${definition.label} recorded`);
+      case 'boolean': return ['0', '1'].includes(value) ? ok(`Flag ${value === '1' ? 'on' : 'off'} (recorded)`) : unsupported();
+      case 'integer': return /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? ok(`API level ${Number(value)} recorded`) : unsupported();
+      case 'date': {
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00Z`) : null;
+        return date && Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value ? ok('Calendar date recorded as the patch level') : unsupported();
+      }
+      case 'build-type': return ['user', 'userdebug', 'eng'].includes(value) ? ok({ user: 'Production build type recorded', userdebug: 'Debug-capable user build recorded', eng: 'Engineering build recorded' }[value]) : unsupported();
+      case 'tags': return ok('Build-tag text recorded; signing authenticity unverified');
+      case 'verified-boot': return ['green', 'yellow', 'orange'].includes(value) ? ok({ green: 'Locked boot state with a non-user-set verification key reported', yellow: 'Locked boot state with a user-set verification key reported', orange: 'Unlocked boot state reported' }[value]) : unsupported();
+      case 'lock': return value === '1' ? ok('Locked flag recorded') : value === '0' ? ok('Unlocked flag recorded') : unsupported();
+      case 'encryption-state': return value === 'encrypted' ? ok('Encryption reported by the property') : value === 'unencrypted' ? ok('Unencrypted state reported by the property') : unsupported();
+      case 'encryption-type': return value === 'file' ? ok('File-based encryption reported') : unsupported();
+      case 'service': return ['running', 'stopped', 'stopping', 'restarting'].includes(value) ? ok(`Service ${value} at capture time`) : unsupported();
+      case 'usb': return /^[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*$/.test(value) ? ok('USB function list recorded') : unsupported();
+      case 'port': {
+        if (!/^-?\d+$/.test(value)) return unsupported();
+        const port = Number(value);
+        if (port === 0 || port === -1) return ok('No positive TCP port specified by this property');
+        return Number.isSafeInteger(port) && port > 0 && port <= 65535 ? ok(`TCP port ${port} configured; reachability unverified`) : unsupported();
+      }
+      default: return unsupported();
+    }
+  }
+  function reviewFor(key, value, definition, interpretation) {
+    if (!interpretation.valid) return 'The catalogue cannot interpret this value. Check the device or vendor definition.';
+    value = value.trim();
+    if (!value || value === 'null') return null;
+    if (key === 'ro.boot.verifiedbootstate' && ['orange', 'yellow'].includes(value)) return 'A custom-key or unlocked boot configuration is reported. Check whether this is intended.';
+    if (key === 'ro.boot.flash.locked' && value === '0') return 'An unlocked bootloader flag is recorded. Check whether this is intended.';
+    if (key === 'ro.debuggable' && value === '1') return 'Debug build capability is recorded. This can be intentional on development devices.';
+    if (['ro.secure', 'ro.adb.secure'].includes(key) && value === '0') return 'A less restrictive ADB flag is recorded. Its effect depends on the build and implementation.';
+    if (key === 'ro.build.type' && ['eng', 'userdebug'].includes(value)) return 'A development build type is recorded. Confirm that it matches the expected firmware.';
+    if (key === 'ro.build.tags' && value.split(',').some(tag => ['test-keys', 'dev-keys'].includes(tag.trim()))) return 'Development signing tags are recorded. Tags alone do not establish rooting or signing authenticity.';
+    if (definition?.type === 'port' && Number(value) > 0) return 'A positive ADB TCP port is configured. Verify whether network debugging is intended.';
+    if (definition?.type === 'usb' && value.split(',').includes('adb')) return 'The USB function list includes ADB. Check whether debugging is intended.';
+    if (definition?.type === 'service' && value === 'restarting') return 'This service was restarting in the snapshot. Repeated captures or logs are needed to establish a crash loop.';
+    if (key === 'ro.crypto.state' && value === 'unencrypted') return 'The property reports an unencrypted state. Verify the actual device configuration.';
+    return null;
+  }
+
+  function analyse(text, sourceFile = 'getprop.txt', progress = () => {}) {
+    if (typeof text !== 'string' || typeof sourceFile !== 'string') throw new Error('Provide a getprop text export and filename.');
+    if (new TextEncoder().encode(text).byteLength > AnalysisConfig.MAX_GETPROP_BYTES) throw new Error(`This property export exceeds ${AnalysisConfig.GETPROP_LIMIT_LABEL}.`);
+    if (text.includes('\0')) throw new Error('Export getprop as UTF-8 text; a NUL byte was found.');
+    const chunks = text.replace(/^\uFEFF/, '').split(/(\r\n|\n|\r)/), lines = [];
+    for (let i = 0; i < chunks.length; i += 2) {
+      if (i === chunks.length - 1 && chunks[i] === '') break;
+      lines.push({ text: chunks[i], eol: chunks[i + 1] || '' });
+    }
+    if (lines.length > AnalysisConfig.MAX_GETPROP_LINES) throw new Error('Too many property source lines. Reduce the export.');
+    const records = [], issues = [], frequencies = new Map();
+    let malformed = 0;
+    const opener = /^\[([A-Za-z0-9_.@:-]+)\]:[ \t]*\[/;
+    const closing = /\][ \t]*$/;
+    function issue(start, end, message) {
+      malformed += end - start + 1;
+      if (issues.length < 100) issues.push({ line: start + 1, end_line: end + 1, message });
+    }
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index].text;
+      if (line.length > AnalysisConfig.MAX_GETPROP_RECORD_CHARS) throw new Error(`Property source line ${index + 1} is too long.`);
+      if (!line.trim()) continue;
+      const match = opener.exec(line);
+      if (!match) { issue(index, index, 'Expected [property.name]: [value].'); continue; }
+      const start = index, key = match[1];
+      let raw = line;
+      let end = closing.exec(line);
+      while (!end && index + 1 < lines.length && !opener.test(lines[index + 1].text)) {
+        raw += lines[index].eol + lines[index + 1].text;
+        index++;
+        if (raw.length > AnalysisConfig.MAX_GETPROP_RECORD_CHARS) throw new Error(`Property starting at line ${start + 1} is too long.`);
+        end = closing.exec(lines[index].text);
+      }
+      if (!end) { issue(start, index, 'Unterminated property value; the next property, if present, is kept separate.'); continue; }
+      if (records.length >= AnalysisConfig.MAX_GETPROP_RECORDS) throw new Error('Too many property records. Reduce the export.');
+      const value = raw.slice(match[0].length, raw.length - end[0].length);
+      const definition = definitionFor(key), interpretation = interpret(definition, value);
+      records.push({ id: String(start + 1), key, value, raw, source_file: sourceFile, line: start + 1, end_line: index + 1,
+        prefix: key.split('.')[0], category: definition?.category || categoryHint(key), category_basis: definition ? 'catalogue' : 'name-hint',
+        label: definition?.label || key, known: Boolean(definition), interpretation: interpretation.text,
+        note: definition?.note || null, source: definition?.source || null,
+        review: reviewFor(key, value, definition, interpretation), duplicate: false,
+        service_state: definition?.type === 'service' && ['running', 'stopped', 'stopping', 'restarting'].includes(value.trim()) ? value.trim() : null,
+        value_state: value === '' ? 'empty' : value.trim() === 'null' ? 'literal-null' : 'recorded',
+      });
+      frequencies.set(key, (frequencies.get(key) || 0) + 1);
+      if (records.length % 500 === 0) progress(`Read ${records.length.toLocaleString('en-US')} properties…`);
+    }
+    if (!records.length) throw new Error('No [property.name]: [value] records found. Open the output of adb shell getprop.');
+    for (const row of records) row.duplicate = frequencies.get(row.key) > 1;
+    return { tool: 'getprop', version: VERSION, source_file: sourceFile, analyzed_at: new Date().toISOString(), records, issues,
+      counts: { records: records.length, distinct_keys: frequencies.size, physical_lines: lines.length,
+        explained: records.filter(row => row.known).length, raw_only: records.filter(row => !row.known).length,
+        review: records.filter(row => row.review || row.duplicate).length, duplicate_records: records.filter(row => row.duplicate).length,
+        empty: records.filter(row => row.value_state === 'empty').length, literal_null: records.filter(row => row.value_state === 'literal-null').length,
+        multiline: records.filter(row => row.end_line > row.line).length, malformed_lines: malformed,
+        services: records.filter(row => row.key.startsWith('init.svc.') && row.key.length > 9).length,
+        service_running: records.filter(row => row.service_state === 'running').length,
+        service_stopped: records.filter(row => row.service_state === 'stopped').length,
+        service_restarting: records.filter(row => row.service_state === 'restarting').length,
+      },
+      notes: [
+        'Properties are recorded configuration and state. The analysis time is not the capture time, and this export does not authenticate the device.',
+        'Explained means a key has a documented interpretation. Raw values are keys outside this dictionary; their categories are name hints.',
+        'Review notes identify limited configuration or data checks. Zero notes does not establish device safety or absence of root or malware.',
+        'A stopped init service can be normal. A single snapshot does not show how often a service restarts.',
+        'Missing properties remain missing. Empty strings and literal null are preserved. Duplicate keys keep every record without choosing a winner.',
+        'Multiline values retain their line endings and source ranges. Unescaped getprop text can be ambiguous if a value itself contains record-shaped lines.',
+        'Values, downloads, and optional history can include identifiers. Analysis runs in this browser; no properties are uploaded or changed on the device.',
+      ],
+    };
+  }
+  function matches(row, filters = {}) {
+    if (filters.prefix && row.prefix !== filters.prefix) return false;
+    if (filters.category && row.category !== filters.category) return false;
+    const status = filters.status;
+    if (status === 'review' && !(row.review || row.duplicate)) return false;
+    if (status === 'explained' && !row.known) return false;
+    if (status === 'raw' && row.known) return false;
+    if (status === 'duplicates' && !row.duplicate) return false;
+    if (status === 'multiline' && row.line === row.end_line) return false;
+    if (['empty', 'literal-null'].includes(status) && row.value_state !== status) return false;
+    if (status?.startsWith('service-') && row.service_state !== status.slice(8)) return false;
+    const query = String(filters.query || '').trim().toLowerCase();
+    return !query || `${row.key} ${row.value} ${row.label} ${row.interpretation} ${row.note || ''} ${row.review || ''}`.toLowerCase().includes(query);
+  }
+  function page(records, filters = {}, requested = 0) {
+    const filtered = records.filter(row => matches(row, filters));
+    const pages = Math.max(1, Math.ceil(filtered.length / AnalysisConfig.GETPROP_PAGE_SIZE));
+    const current = Math.min(pages - 1, Math.max(0, Math.floor(Number(requested)) || 0));
+    return { total: filtered.length, page: current, pages, records: filtered.slice(current * AnalysisConfig.GETPROP_PAGE_SIZE, (current + 1) * AnalysisConfig.GETPROP_PAGE_SIZE) };
+  }
+  function filteredReport(summary, filters = {}) {
+    const selection = Object.fromEntries(['query', 'prefix', 'category', 'status'].map(key => [key, typeof filters[key] === 'string' ? filters[key] : '']));
+    const records = summary.records.filter(row => matches(row, selection));
+    return { tool: 'getprop-filtered', version: VERSION, source_file: summary.source_file, analyzed_at: summary.analyzed_at, exported_at: new Date().toISOString(), filters: selection, total_records: summary.records.length, matching_records: records.length, records, notes: summary.notes };
+  }
+  function isSummary(value) {
+    return object(value) && value.tool === 'getprop' && value.version === VERSION && typeof value.source_file === 'string' && typeof value.analyzed_at === 'string'
+      && object(value.counts) && Object.values(value.counts).every(n => Number.isSafeInteger(n) && n >= 0)
+      && Array.isArray(value.records) && value.records.length > 0 && value.records.length <= AnalysisConfig.MAX_GETPROP_RECORDS
+      && value.records.every(row => object(row) && ['id', 'key', 'value', 'raw', 'source_file', 'prefix', 'category', 'label', 'interpretation'].every(key => typeof row[key] === 'string')
+        && Number.isSafeInteger(row.line) && row.line > 0 && Number.isSafeInteger(row.end_line) && row.end_line >= row.line)
+      && value.counts.records === value.records.length && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string')
+      && Array.isArray(value.issues) && value.issues.length <= 100 && value.issues.every(issue => object(issue) && Number.isSafeInteger(issue.line) && Number.isSafeInteger(issue.end_line) && typeof issue.message === 'string');
+  }
+  return { analyse, matches, page, filteredReport, isSummary };
 })();
 
 ;
@@ -2189,7 +2421,7 @@ async function extractEntry(entry) {
 async function inspectFile(file, tool) {
   const validationError = validateCapture(file, tool);
   if (validationError) throw new Error(validationError);
-  if (!['bugreport', 'logcat', 'packages'].includes(tool)) throw new Error('Choose a supported analyser.');
+  if (!['bugreport', 'logcat', 'packages', 'getprop'].includes(tool)) throw new Error('Choose a supported analyser.');
   if (typeof file.text !== 'function' || typeof file.arrayBuffer !== 'function') throw new Error('Choose a readable file from your device.');
   activeFile = file; activeTool = tool; archive = null; logData = null; report = null;
   progress('Reading your file…', true);
@@ -2242,6 +2474,12 @@ async function chooseEntry(name) {
 
 async function runAnalysis(text, source) {
   if (!text.trim()) throw new Error('The selected file has no text to analyse.');
+  if (activeTool === 'getprop') {
+    progress('Reading Android system properties…', true);
+    report = GetpropAnalysis.analyse(text, source, progress);
+    postMessage({ type: 'result', summary: report });
+    return;
+  }
   if (activeTool === 'packages') {
     progress('Reading package inventory…', true);
     report = PackageAnalysis.analyse(text, source, progress);
