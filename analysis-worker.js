@@ -976,6 +976,27 @@ const Bugreport = (() => {
     { re: /kidsguard/i, label: "KidsGuard-family" },
     { re: /\bminspy\b/i, label: "Minspy-family" },
     { re: /letmespy/i, label: "LetMeSpy-family" },
+  // --- Additional Stalkerware Families ---
+    { re: /mobiletracker/i, label: "MobileTracker" },
+    { re: /pctattletale/i, label: "pcTattletale" },
+    { re: /\bspyhide\b/i, label: "SpyHide" },
+    { re: /spyfone/i, label: "SpyFone" },
+    { re: /spyhuman/i, label: "SpyHuman" },
+    { re: /\btispy\b/i, label: "TiSPY" },
+    { re: /appmia/i, label: "Appmia" },
+    { re: /\bcopy9\b/i, label: "Copy9" },
+    { re: /mobipast/i, label: "MobiPast" },
+    { re: /hellospy/i, label: "HelloSpy" },
+    { re: /ikeymonitor/i, label: "iKeyMonitor" },
+    { re: /spytomobile/i, label: "SpyToMobile" },
+    { re: /guestspy/i, label: "GuestSpy" },
+    { re: /autoforward/i, label: "Auto Forward" },
+    { re: /phonespector/i, label: "PhoneSpector" },
+    { re: /trackview/i, label: "TrackView (Dual-use monitoring)" },
+    { re: /reptilicus/i, label: "Reptilicus" },
+    { re: /smartphonelogs/i, label: "SmartphoneLogs" },
+    { re: /fonetracker/i, label: "FoneTracker" },
+    { re: /maxxspy/i, label: "MaxxSpy" }
   ];
 
   const SPECIAL_ACCESS_PERMISSIONS = [
