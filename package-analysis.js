@@ -59,8 +59,6 @@ const PackageAnalysis = (() => {
       const config = /^(?:split_)?(?:(.+)\.)?config\.(.+)\.apk$/.exec(filename);
       if (!role && config) role = { ...configuration(config[2]), module: config[1] || null };
       if (!role && /^split_.+\.apk$/.test(filename)) role = { role: 'feature', label: `Feature split · ${filename.slice(6, -4)}`, explanation: 'Additional app functionality or a code module.' };
-      // Preinstalled apps often use App-arm64_v8a.apk / App-xhdpi.apk.
-      // Only infer this convention when the matching App.apk is a sibling.
       const oem = /^(.+)-([^/]+)\.apk$/.exec(filename);
       if (!role && oem && files.some((other, i) => i !== index && names[i] === `${oem[1]}.apk` && location(other) === location(file))) {
         const candidate = configuration(oem[2]);
@@ -141,7 +139,6 @@ const PackageAnalysis = (() => {
       verified_certificate: verified,
       trusted_certificate: trusted,
       certificate_error: certificateError,
-      // False plus absent certificate fields is not evidence of a bad signature.
       certificate_status: certificateError ? 'error-reported' : verified === true ? 'verified-reported' : cert ? 'metadata-only' : 'unknown',
     };
   }
@@ -249,8 +246,6 @@ const PackageAnalysis = (() => {
     });
   }
 
-  // Refresh saved v1/v2/v3 reports against the shipped catalogue without changing
-  // their capture date or mutating the original evidence.
   function withOrigins(summary) {
     const packages = summary.packages.map(pkg => {
       const origin = PackageOrigins.lookup(pkg.name, pkg);
@@ -365,8 +360,6 @@ const PackageAnalysis = (() => {
       });
       else throw new Error('Use a package array or an object keyed by package ID.');
     } else {
-      // Only top-level package fields in the active Packages section are used.
-      // Activity/service labels and hidden factory versions are not app metadata.
       let active = !/^Packages:\s*$/m.test(text), current = null, indent = 0;
       const flush = () => {
         if (!current) return;
@@ -416,8 +409,6 @@ const PackageAnalysis = (() => {
       const fields = { label: null, version_name: null, version_code: null, ...pkg.metadata };
       const conflicts = [];
       let changed = false;
-      // Version name and code must describe the same release. If either
-      // disagrees, do not combine one source's name with another source's code.
       const conflictingVersion = ['version_name', 'version_code'].some(key => {
         const values = new Set(candidates.map(row => row.metadata[key]?.value).filter(value => value != null));
         return values.size > 1 || (values.size && fields[key] && !values.has(fields[key].value));

@@ -2,9 +2,9 @@
 // Shared by the UI and worker. The build includes this file in both contexts.
 const AnalysisConfig = Object.freeze({
   ASSET_VERSION: '0.5.4',
-  MAX_FILE_BYTES: 350 * 1024 * 1024,
-  FILE_LIMIT_LABEL: '350 MiB',
-  MAX_LINES: 20_000_000,
+  MAX_FILE_BYTES: 150 * 1024 * 1024,
+  FILE_LIMIT_LABEL: '150 MiB',
+  MAX_LINES: 10_000_000,
   MAX_ARCHIVE_ENTRIES: 1_000,
   PAGE_SIZE: 100,
   QUERY_DEBOUNCE_MS: 180,
@@ -57,7 +57,7 @@ function validateCapture(file, tool = 'logcat') {
 // Exact-ID evidence and namespace hints are separate; hints never assign country.
 const PackageOrigins = (() => {
   'use strict';
-  const VERSION = '2026-09-22.2';
+  const VERSION = '2026-09-23.1';
   const CHECKED_AT = '2026-09-22';
   const SCOPE = 'China-linked means a listed publisher based in mainland China, or a documented parent group with substantial operations there. Publisher location and group links are shown separately.';
   const LIMITATION = 'Exact-ID catalogue matches record publisher evidence. Namespace hints suggest a publisher or platform but leave country unverified. Neither authenticates the installed APK or assesses app safety. Unclassified does not mean non-Chinese; a publisher listed elsewhere does not exclude other China connections.';
@@ -72,9 +72,9 @@ const PackageOrigins = (() => {
     status: 'needs-review', basis: 'unresolved', app_name: appName,
     publisher, publisher_country: 'SG', group: null, reason, sources: [play(id)],
   }];
-  const listedPublisher = (id, appName, publisher, country) => [id, {
+  const listedPublisher = (id, appName, publisher, country, checkedAt = CHECKED_AT) => [id, {
     status: 'publisher-recorded', basis: 'listed-publisher', app_name: appName,
-    publisher, publisher_country: country, group: null,
+    publisher, publisher_country: country, group: null, checked_at: checkedAt,
     reason: 'The current listing for this exact package ID identifies this publisher and country. Parent-company connections and the installed APK signer have not been established by this rule.',
     sources: [play(id)],
   }];
@@ -85,6 +85,7 @@ const PackageOrigins = (() => {
     listedPublisher('com.android.chrome', 'Google Chrome', 'Google LLC', 'US'),
     listedPublisher('com.microsoft.office.outlook', 'Microsoft Outlook', 'Microsoft Corporation', 'US'),
     listedPublisher('com.facebook.katana', 'Facebook', 'Meta Platforms, Inc.', 'US'),
+    listedPublisher('com.instagram.android', 'Instagram', 'Meta Platforms, Inc.', 'US', '2026-09-23'),
     oneplus('com.oneplus.note', 'OnePlus Notes'),
     oneplus('com.oneplus.backuprestore', 'Clone Phone - OnePlus app'),
     oneplus('net.oneplus.forums', 'OnePlus Community'),
@@ -131,7 +132,7 @@ const PackageOrigins = (() => {
 
   function lookup(name, pkg = {}) {
     const entry = catalogue.get(name);
-    if (entry) return { ...entry, match_method: 'exact-package-id', publisher_hint: null, matched_namespace: null, matched_package: name, checked_at: CHECKED_AT, catalogue_version: VERSION, sources: entry.sources.map(source => ({ ...source })) };
+    if (entry) return { ...entry, match_method: 'exact-package-id', publisher_hint: null, matched_namespace: null, matched_package: name, checked_at: entry.checked_at || CHECKED_AT, catalogue_version: VERSION, sources: entry.sources.map(source => ({ ...source })) };
     const hint = typeof name === 'string' ? namespaceHints.find(rule => name.startsWith(rule.prefix) && name.length > rule.prefix.length) : null;
     const platform = pkg.system === true && pkg.third_party !== true && typeof name === 'string' && (name === 'android' || name.startsWith('com.android.') || name.startsWith('android.'));
     if (hint || platform) {
@@ -658,7 +659,7 @@ const PackagesView = (() => {
   }
   const originLabels = { 'china-linked': 'China-linked · documented', 'needs-review': 'Needs review', 'publisher-recorded': 'Listed publisher · country recorded', 'publisher-hint': 'Namespace hint · country unverified', unclassified: 'Unclassified' };
   const basisLabels = { 'china-publisher': 'Publisher based in China', 'china-operating-group': 'Group operations in China', 'listed-publisher': 'Exact-ID publisher listing', 'publisher-namespace': 'Publisher namespace inference', 'platform-namespace': 'Reported system package with platform namespace', unresolved: 'Ownership or mapping unresolved', 'not-in-catalogue': 'No publisher-country rule' };
-  
+
   function originBadge(origin, escapeHTML) {
     const tone = origin.status === 'china-linked' ? 'linked' : origin.status === 'needs-review' ? 'warn' : 'neutral';
     return `<span class="badge ${tone}">${escapeHTML(originLabels[origin.status])}</span>`;
@@ -670,7 +671,6 @@ const PackagesView = (() => {
 
   function render(summary, view, helpers) {
     const { $, escapeHTML, number, stat, panel, table, notes, download } = helpers;
-    const installerName = id => id ? (PackageNames.lookup(id)?.name || id) : id;
     const c = summary.counts;
     const certificateNote = c.certificate_metadata === 0
       ? `No certificate metadata is populated in the ${number(c.apk_files)} APK entries.`
@@ -713,7 +713,7 @@ const PackagesView = (() => {
           ['Shared UID groups', number(c.shared_uid_groups)],
           ['System packages with a file in /data/app', number(c.system_packages_in_data_app)],
         ]))}
-        ${panel('Recorded installers', 'Names describe the inventory; they do not establish app trust.', table(['Installer', 'Packages'], summary.installers.map(([name, count]) => [escapeHTML(installerName(name) ?? 'Not recorded'), number(count)])))}
+        ${panel('Recorded installers', 'Names describe the inventory; they do not establish app trust.', table(['Installer', 'Packages'], summary.installers.map(([name, count]) => [escapeHTML(name ?? 'Not recorded'), number(count)])))}
       </div>
       <section class="panel">
         <h2>Package explorer</h2>
@@ -722,7 +722,7 @@ const PackagesView = (() => {
           <div class="field"><label for="package-origin">Publisher / China connection</label><select id="package-origin"><option value="">All packages</option><option value="china-linked">Documented China links</option><option value="china-publisher">Publisher based in China only</option><option value="needs-review">Needs review</option><option value="publisher-recorded">Other publisher listings</option><option value="publisher-hint">Namespace hints · country unverified</option><option value="unclassified">Unclassified · no match or hint</option><option value="exclude-china-linked">Exclude documented matches</option></select></div>
           <div class="field"><label for="package-type">Reported type</label><select id="package-type"><option value="">All types</option><option value="system">System</option><option value="third-party">Third-party</option><option value="unknown">Unknown</option><option value="conflicting">Conflicting</option></select></div>
           <div class="field"><label for="package-disabled">Reported state</label><select id="package-disabled"><option value="">All states</option><option value="false">Not disabled</option><option value="true">Disabled</option><option value="unknown">Not recorded</option></select></div>
-          <div class="field"><label for="package-installer">Installer</label><select id="package-installer"><option value="">All installers</option>${summary.installers.filter(([name]) => name !== null).map(([name]) => `<option value="${escapeHTML(name)}">${escapeHTML(installerName(name))}</option>`).join('')}</select></div>
+          <div class="field"><label for="package-installer">Installer</label><select id="package-installer"><option value="">All installers</option>${summary.installers.filter(([name]) => name !== null).map(([name]) => `<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join('')}</select></div>
           <div class="field"><label for="package-review">Evidence filter</label><select id="package-review"><option value="">All packages</option><option value="third-party-missing-installer">Third-party; installer not recorded</option><option value="missing-installer">Any type; installer not recorded</option><option value="findings">Has review notes</option><option value="missing-name">App name not recorded</option><option value="data-errors">Data errors reported</option><option value="certificate-unknown">Has an APK with unknown verification</option></select></div>
           <div class="field"><label for="package-layout">APK layout</label><select id="package-layout"><option value="">All layouts</option><option value="multiple">Multiple APK files</option><option value="split">Split filenames detected</option><option value="single">One APK file</option><option value="unclassified">Contains unclassified files</option><option value="empty">No APK files</option></select></div>
         </div>
@@ -743,23 +743,11 @@ const PackagesView = (() => {
         `<strong class="package-name">${escapeHTML(pkg.display_name)}</strong>${pkg.display_name !== pkg.name ? `<code class="package-id">${escapeHTML(pkg.name)}</code>` : ''}<span class="tiny">${escapeHTML(nameSources[pkg.display_name_source])}<br>UID ${escapeHTML(pkg.uid ?? 'Not recorded')}</span>`,
         `${originBadge(pkg.origin, escapeHTML)}<br><span class="tiny">${escapeHTML(pkg.origin.publisher_hint || pkg.origin.app_name || basisLabels[pkg.origin.basis])}</span>`,
         `${escapeHTML(classification[pkg.classification])}<br><span class="tiny">${pkg.disabled === true ? 'Disabled' : pkg.disabled === false ? 'Not disabled' : 'Disabled state not recorded'}</span>`,
-        escapeHTML(installerName(pkg.installer) ?? 'Not recorded'),
+        escapeHTML(pkg.installer ?? 'Not recorded'),
         apkBreakdown(pkg, escapeHTML, number),
         `<button class="button small" data-package="${pkg.source_index}">Inspect record</button>`,
       ]));
-    };
-    $('package-show-missing-names').disabled = c.names_unmatched === 0;
-    $('package-export-missing-names').disabled = c.names_unmatched === 0;
-    $('package-show-missing-names').onclick = () => {
-      view.filters = { review: 'missing-name' }; view.page = 0;
-      for (const key of filterKeys) $(`package-${key}`).value = view.filters[key] || '';
-      updateRows();
-      $('package-review').focus();
-    };
-    $('package-export-missing-names').onclick = () => {
-      const template = PackageAnalysis.missingNameTemplate(summary);
-      download(new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' }), 'package-labels-to-complete.json');
-    };
+    }
 
     $('package-add-metadata').onclick = () => $('package-metadata-file').click();
     $('package-metadata-file').onchange = event => {
@@ -783,6 +771,18 @@ const PackagesView = (() => {
       view.filters = {}; view.page = 0;
       for (const key of filterKeys) $(`package-${key}`).value = '';
       updateRows();
+    };
+    $('package-show-missing-names').disabled = c.names_unmatched === 0;
+    $('package-export-missing-names').disabled = c.names_unmatched === 0;
+    $('package-show-missing-names').onclick = () => {
+      view.filters = { review: 'missing-name' }; view.page = 0;
+      for (const key of filterKeys) $(`package-${key}`).value = view.filters[key] || '';
+      updateRows();
+      $('package-review').focus();
+    };
+    $('package-export-missing-names').onclick = () => {
+      const template = PackageAnalysis.missingNameTemplate(summary);
+      download(new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' }), 'package-labels-to-complete.json');
     };
     function selectOrigin(origin) {
       // This overview shortcut intentionally starts a fresh selection.
@@ -838,7 +838,7 @@ const PackagesView = (() => {
       <p class="hint">${escapeHTML(summary.origin_catalogue.limitation)}</p>`)
       + panel('Reported package fields', '', table(['Field', 'Value'], [
       ['UID', escapeHTML(pkg.uid ?? 'Not recorded')],
-      ['Installer', escapeHTML(installerName(pkg.installer) ?? 'Not recorded')],
+      ['Installer', escapeHTML(pkg.installer ?? 'Not recorded')],
       ['system', recordedBoolean(pkg.system)],
       ['third_party', recordedBoolean(pkg.third_party)],
       ['disabled', recordedBoolean(pkg.disabled)],
@@ -865,15 +865,15 @@ const PackagesView = (() => {
     const lines = ['# Package inventory analysis', '', 'Source:', '', block(summary.source_file), '', `Analysed: ${summary.analyzed_at}`, '', '## Counts', ''];
     for (const [key, count] of Object.entries(summary.counts)) lines.push(`- ${key.replace(/_/g, ' ')}: ${count}`);
     lines.push('', '## China connection catalogue', '', `Version: ${summary.origin_catalogue.version}; checked: ${summary.origin_catalogue.checked_at}.`, '', summary.origin_catalogue.scope, '', summary.origin_catalogue.limitation);
-    if (summary.name_catalogue) lines.push('', '## App name catalogue', '', `Version: ${summary.name_catalogue.version}; checked: ${summary.name_catalogue.checked_at}; ${summary.name_catalogue.rule_count} dedicated name rules.`, '', summary.name_catalogue.scope, '', summary.name_catalogue.limitation);    
+    if (summary.name_catalogue) lines.push('', '## App name catalogue', '', `Version: ${summary.name_catalogue.version}; checked: ${summary.name_catalogue.checked_at}; ${summary.name_catalogue.rule_count} dedicated name rules.`, '', summary.name_catalogue.scope, '', summary.name_catalogue.limitation);
     lines.push('', '## Interpretation', '', ...summary.notes.map(note => `- ${note}`), '', '## Recorded installers', '');
     for (const [installer, count] of summary.installers) lines.push(block(`${installer ?? 'Not recorded'}: ${count}`), '');
     lines.push('## Package evidence', '');
     for (const pkg of summary.packages) {
-      lines.push(`### Record ${pkg.source_index}`, '', block(`${pkg.name}\nSource: ${pkg.evidence}\nUID: ${pkg.uid ?? 'Not recorded'}\nType: ${classification[pkg.classification]}\nDisabled: ${recordedBoolean(pkg.disabled)}\nInstaller: ${installerName(pkg.installer) ?? 'Not recorded'}`), '');
+      lines.push(`### Record ${pkg.source_index}`, '', block(`${pkg.name}\nSource: ${pkg.evidence}\nUID: ${pkg.uid ?? 'Not recorded'}\nType: ${classification[pkg.classification]}\nDisabled: ${recordedBoolean(pkg.disabled)}\nInstaller: ${pkg.installer ?? 'Not recorded'}`), '');
       lines.push(block(`Display name: ${pkg.display_name}\nName source: ${nameSources[pkg.display_name_source]}\n${versionText(pkg).join('\n')}\nAPK files: ${pkg.files.length} (${pkg.apk_group.summary})\n${pkg.apk_group.explanation}\n${pkg.apk_group.note}`), '');
       for (const [key, field] of Object.entries(pkg.metadata)) if (field) lines.push(block(`${key}: ${field.value}\nSource: ${field.source_file} · ${field.evidence}`), '');
-      if (pkg.name_evidence) lines.push(block(`Catalogue app name: ${pkg.name_evidence.name}\nExact package: ${pkg.name_evidence.matched_package}\nSource: ${pkg.name_evidence.source_url || pkg.name_evidence.source_title}\nChecked: ${pkg.name_evidence.checked_at || 'Not recorded'}`), '');  
+      if (pkg.name_evidence) lines.push(block(`Catalogue app name: ${pkg.name_evidence.name}\nExact package: ${pkg.name_evidence.matched_package}\nSource: ${pkg.name_evidence.source_url || pkg.name_evidence.source_title}\nChecked: ${pkg.name_evidence.checked_at || 'Not recorded'}`), '');
       if (pkg.metadata_conflicts?.length) lines.push(block(`Metadata conflicts (existing values retained):\n${JSON.stringify(pkg.metadata_conflicts, null, 2)}`), '');
       for (const file of pkg.files) lines.push(block(`${file.apk.filename}: ${file.apk.label} (filename inference)`), '');
       const origin = pkg.origin;
@@ -1117,8 +1117,8 @@ const GetpropView = (() => {
   function createToolState() {
     return { worker: null, metadataWorker: null, summary: null, tab: 'overview', busy: false, fileSize: 0, page: 0, queryId: 0, filters: {}, sourceFiles: [] };
   }
-  const state = { bugreport: createToolState(), logcat: createToolState(), packages: createToolState(), settings: createToolState(), getprop: createToolState() };
-  const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser', packages: 'Package Analyser', settings: 'Settings Analyser', getprop: 'System Properties' };
+  const state = { bugreport: createToolState(), logcat: createToolState(), packages: createToolState(), settings: createToolState(), getprop: createToolState(), pcap: createToolState() };
+  const titles = { bugreport: 'Bug Report Analyser', logcat: 'Log Analyser', packages: 'Package Analyser', settings: 'Settings Analyser', getprop: 'System Properties', pcap: 'PCAP Analyser' };
   const historyKey = 'android_tools_history_v2';
   let route = 'home', toastTimer = null, queryTimer = null, contextTool = null, contextTarget = 1;
   let contextRequestId = 0;
@@ -1179,6 +1179,7 @@ const GetpropView = (() => {
   }
 
   function renderTool(tool) {
+    if (tool === 'pcap') { PcapTool.mount($(tool)); return; }
     const log = tool === 'logcat';
     const packages = tool === 'packages';
     const settings = tool === 'settings';

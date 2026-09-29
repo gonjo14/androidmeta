@@ -1,0 +1,24 @@
+#pcap .pcap-stats { grid-template-columns: repeat(4,minmax(0,1fr)); }
+#pcap .pcap-stat-value { font-size: clamp(1.35rem,2vw,2rem); font-weight: 700; margin: 5px 0; letter-spacing: -.035em; }
+#pcap .pcap-filters { display: grid; grid-template-columns: minmax(220px,2fr) minmax(150px,1fr) auto; gap: 16px; align-items: end; margin: 20px 0; }
+#pcap .pcap-filters input[type=search], #pcap .pcap-filters select { width: 100%; }
+#pcap .pcap-filters label { display: grid; gap: 7px; font-size: .8rem; color: var(--muted); }
+#pcap .pcap-filters .pcap-checkbox { display: flex; align-items: center; padding: 10px 0; }
+#pcap .pcap-table { width: 100%; font-size: .82rem; }
+#pcap .pcap-endpoint { font-family: ui-monospace,SFMono-Regular,Consolas,monospace; overflow-wrap: anywhere; }
+#pcap .pcap-table th, #pcap .pcap-table td { vertical-align: top; }
+#pcap .pcap-table td { max-width: 340px; overflow-wrap: anywhere; }
+#pcap .pcap-meta { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 15px; margin: 14px 0; }
+#pcap .pcap-meta dt { color: var(--muted); font-size: .75rem; }
+#pcap .pcap-meta dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+#pcap .pcap-bars { display: grid; gap: 14px; margin-top: 18px; }
+#pcap .pcap-bar { display: grid; grid-template-columns: 110px 1fr 65px; align-items: center; gap: 12px; font-size: .82rem; }
+#pcap .pcap-bar-track { background: var(--green-soft); border-radius: 4px; overflow: hidden; }
+#pcap .pcap-bar-track span { display: block; height: 10px; background: var(--green); }
+#pcap .pcap-help { margin-top: 16px; font-size: .82rem; }
+#pcap .pcap-empty { padding: 35px 18px; text-align: center; color: var(--muted); }
+#pcap-dialog { width: min(960px,94vw); }
+#pcap-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; background: var(--bg); padding: 16px; font-size: .77rem; }
+#pcap .pcap-table .button { white-space: nowrap; }
+@media(max-width:900px) { #pcap .pcap-stats { grid-template-columns: repeat(2,minmax(0,1fr)); } #pcap .pcap-filters { grid-template-columns: 1fr 1fr; } }
+@media(max-width:600px) { #pcap .pcap-filters, #pcap .pcap-meta { grid-template-columns: 1fr; } #pcap .tabs { overflow-x: auto; } #pcap .tabs button { white-space: nowrap; } #pcap .pcap-bar { grid-template-columns: 90px 1fr 55px; } }

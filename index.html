@@ -7,6 +7,8 @@
 <meta name="description" content="Local Android bugreport, logcat, package inventory, settings, and system property analysis. Inspect captures in your browser.">
 <title>Android Tools</title>
 <link rel="stylesheet" href="./styles.css?v=0.5.2">
+<!-- PCAP add-on 1.0.0 -->
+<link rel="stylesheet" href="pcap.css?v=1.0.0">
 </head>
 <body>
 <svg class="svg-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
@@ -34,6 +36,7 @@
       <button class="nav-item" data-route="packages"><svg class="icon"><use href="#i-grid"/></svg>Package Analyser</button>
       <button class="nav-item" data-route="settings"><svg class="icon"><use href="#i-settings"/></svg>Settings Analyser</button>
       <button class="nav-item" data-route="getprop"><svg class="icon"><use href="#i-file"/></svg>System Properties</button>
+      <button class="nav-item" data-route="pcap"><svg class="icon"><use href="#i-log"/></svg>PCAP Analyser</button>
     </nav>
     <div class="sidebar-bottom"><svg class="icon"><use href="#i-shield"/></svg><div><strong>On your device</strong><p>Files are analysed in your browser. No upload required.</p></div></div>
     <div class="version">ANDROID TOOLS <span>v0.5.4</span></div>
@@ -44,6 +47,7 @@
       <div class="home-intro"><div><div class="eyebrow">ANDROID DIAGNOSTICS</div><h1>Less noise.<br><span>More answers.</span></h1><p>Turn Android captures into a clear starting point.<br class="desktop-only"> Find failures, inspect the evidence, and get back to building.</p></div><div class="signal-art" aria-hidden="true"><div class="art-top"><span class="dot"></span><span>CAPTURE → CLARITY</span></div><div class="art-lines"><i></i><i></i><i></i><i></i></div><div class="art-signal"><svg viewBox="0 0 240 70"><path d="M0 44h47l14-17 16 29 20-45 18 37 17-11h26l12-17 15 24h55"/></svg></div><div class="art-bottom"><span>01 / COLLECT</span><span>02 / UNDERSTAND</span></div></div></div>
       <div class="section-heading"><h2>Your toolkit</h2><span>Choose a capture to investigate</span></div>
       <div class="menu-grid">
+        <button class="tool-card" data-route="pcap"><span class="tool-icon"><svg class="icon"><use href="#i-log"/></svg></span><span class="tool-name">PCAP Analyser <svg class="icon"><use href="#i-arrow"/></svg></span><span class="tool-description">Explore network conversations, observed names and packet evidence from a saved capture.</span><span class="tool-footer">.PCAP · .PCAPNG <span>Open analyser</span></span></button>
         <button class="tool-card" data-route="bugreport"><span class="tool-icon"><svg class="icon"><use href="#i-bug"/></svg></span>
           <span class="tool-name">Bug Report Analyser <svg class="icon"><use href="#i-arrow"/></svg></span><span class="tool-description">A full-device view of crashes, ANRs, wakelocks, memory pressure, and app access.</span><span class="tool-footer">.ZIP · .TXT · .LOG <span>Open analyser</span></span></button>
         <button class="tool-card log-card" data-route="logcat"><span class="tool-icon"><svg class="icon"><use href="#i-log"/></svg></span>
@@ -62,6 +66,7 @@
     <section id="packages" class="page" hidden></section>
     <section id="settings" class="page" hidden></section>
     <section id="getprop" class="page" hidden></section>
+    <section id="pcap" class="page" hidden></section>
     <footer class="app-footer"><span>Android Tools · Local diagnostics</span><span>Evidence first. Context always.</span></footer>
   </main>
 </div>
@@ -73,9 +78,9 @@
 <div id="toast" role="status" hidden></div>
 <noscript>
   <div class="noscript">Enable JavaScript to analyse files locally.</div></noscript>
-
 <script src="package-names.js?v=0.5.4" defer></script>
 <script src="package-analysis.js?v=0.5.4" defer></script>
-<script src="app.js?v=0.5.4" defer></script>
+<script src="pcap-view.js?v=1.0.0" defer></script>
+<script src="app.js?v=0.5.4&amp;pcap=1.0.0" defer></script>
 </body>
 </html>
