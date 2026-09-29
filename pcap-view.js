@@ -24,7 +24,7 @@ const PcapTool = (() => {
     function reset(){worker?.terminate();worker=null;summary=null;clearTimeout(timer);queryId++;inspectId++;filters={};tab='overview';pageNumber=0;busy(false);for(const name of ['filebar','results','error'])$(name).hidden=true;$('results').replaceChildren();$('upload').hidden=false;$('help').hidden=false;if($('dialog').open)$('dialog').close();}
     function send(message){if(worker)worker.postMessage(message);}
     function open(file){
-      if(!file||!file.size||file.size>100*1024*1024){error('Choose a non-empty capture up to 100 MiB.');return;}
+      if(!file||!file.size||file.size>5*1024*1024*1024){error('Choose a non-empty capture up to 5 GiB.');return;}
       if(!/\.(pcap|pcapng|cap)$/i.test(file.name)){error('Choose a .pcap, .pcapng or .cap file.');return;}
       reset();busy(true);$('upload').hidden=true;$('help').hidden=true;$('progress').textContent='Opening '+file.name+'…';
       let active;try{active=new Worker(new URL('pcap-worker.js?v=1.0.0',document.baseURI));}catch(_){busy(false);$('upload').hidden=false;error('The capture worker could not start. Serve the tool over HTTP or HTTPS with the PCAP files beside index.html.');return;}

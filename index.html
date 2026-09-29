@@ -76,11 +76,18 @@
     <footer class="app-footer"><span>Android Tools · Local diagnostics</span><span>Evidence first. Context always.</span></footer>
   </main>
 </div>
-<dialog id="context-dialog" aria-labelledby="context-title"><div class="dialog-head"><div><div class="eyebrow">SOURCE CONTEXT</div><h2 id="context-title">Log context</h2></div><button class="button" data-close="context-dialog">Close</button></div><p id="context-meta" class="muted"></p><div id="context-content" class="source-lines"></div><div class="dialog-foot"><button class="button" id="context-before">Earlier lines</button><button class="button" id="context-after">Later lines</button></div></dialog>
-<dialog id="history-dialog" aria-labelledby="history-title"><div class="dialog-head"><div><div class="eyebrow">THIS BROWSER</div><h2 id="history-title">Saved analyses</h2></div><button class="button" data-close="history-dialog">Close</button></div><p class="muted">Only summaries you choose to remember are saved. They may include log excerpts, raw settings and properties, and identifiers. Reopen source files to explore raw log lines or combine settings exports.</p><div id="history-list"></div><div class="dialog-foot"><button class="button danger" id="history-clear">Clear saved history</button></div></dialog>
-<dialog id="package-dialog" aria-labelledby="package-title"><div class="dialog-head"><div><div class="eyebrow">PACKAGE EVIDENCE</div><h2 id="package-title">Package details</h2></div><button class="button" data-close="package-dialog">Close</button></div><p id="package-meta" class="muted"></p><div id="package-content"></div></dialog>
-<dialog id="setting-dialog" aria-labelledby="setting-title"><div class="dialog-head"><div><div class="eyebrow">SETTINGS EVIDENCE</div><h2 id="setting-title">Setting details</h2></div><button class="button" data-close="setting-dialog">Close</button></div><p id="setting-meta" class="muted"></p><div id="setting-content"></div></dialog>
-<dialog id="property-dialog" aria-labelledby="property-title"><div class="dialog-head"><div><div class="eyebrow">PROPERTY EVIDENCE</div><h2 id="property-title">Property details</h2></div><button class="button" data-close="property-dialog">Close</button></div><p id="property-meta" class="muted"></p><div id="property-content"></div></dialog>
+<dialog id="context-dialog" aria-labelledby="context-title"><div class="dialog-head"><div>
+  <div class="eyebrow">SOURCE CONTEXT</div><h2 id="context-title">Log context</h2></div><button class="button" data-close="context-dialog">Close</button></div>
+  <p id="context-meta" class="muted"></p><div id="context-content" class="source-lines"></div><div class="dialog-foot"><button class="button" id="context-before">Earlier lines</button><button class="button" id="context-after">Later lines</button></div></dialog>
+<dialog id="history-dialog" aria-labelledby="history-title"><div class="dialog-head"><div><div class="eyebrow">THIS BROWSER</div><h2 id="history-title">Saved analyses</h2></div><button class="button" data-close="history-dialog">Close</button></div>
+  <p class="muted">Only summaries you choose to remember are saved. They may include log excerpts, raw settings and properties, and identifiers. Reopen source files to explore raw log lines or combine settings exports.</p><div id="history-list"></div>
+  <div class="dialog-foot"><button class="button danger" id="history-clear">Clear saved history</button></div></dialog>
+<dialog id="package-dialog" aria-labelledby="package-title"><div class="dialog-head"><div><div class="eyebrow">PACKAGE EVIDENCE</div><h2 id="package-title">Package details</h2></div>
+  <button class="button" data-close="package-dialog">Close</button></div><p id="package-meta" class="muted"></p><div id="package-content"></div></dialog>
+<dialog id="setting-dialog" aria-labelledby="setting-title"><div class="dialog-head"><div><div class="eyebrow">SETTINGS EVIDENCE</div><h2 id="setting-title">Setting details</h2></div>
+  <button class="button" data-close="setting-dialog">Close</button></div><p id="setting-meta" class="muted"></p><div id="setting-content"></div></dialog>
+<dialog id="property-dialog" aria-labelledby="property-title"><div class="dialog-head"><div><div class="eyebrow">PROPERTY EVIDENCE</div><h2 id="property-title">Property details</h2></div>
+  <button class="button" data-close="property-dialog">Close</button></div><p id="property-meta" class="muted"></p><div id="property-content"></div></dialog>
 <div id="toast" role="status" hidden></div>
 <noscript>
   <div class="noscript">Enable JavaScript to analyse files locally.</div></noscript>

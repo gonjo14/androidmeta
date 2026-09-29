@@ -1,7 +1,13 @@
 // Local, bounded PCAP/PCAPNG decoding. No network lookups or decryption.
 const PcapAnalysis = (() => {
   'use strict';
-  const MAX_BYTES = 5 * 1024 * 1024 * 1024, MAX_PACKETS = 2000000;
+  const MAX_BYTES = 5 * 1024 * 1024 * 1024;      // 5 GiB
+  const MAX_PACKETS = 2000000;                   // packets kept in memory for exploration
+  const CHUNK_BYTES = 32 * 1024 * 1024;          // read size when streaming a File
+  const MAX_BLOCK_BYTES = 64 * 1024 * 1024;      // largest plausible PCAPNG block
+  const MAX_RECORD_BYTES = 16 * 1024 * 1024;     // largest plausible classic-PCAP packet
+  const PCAP_MAGIC = {2712847316:[false,1e-3],3569595041:[true,1e-3],2712812621:[false,1e-6],1295823521:[true,1e-6]};
+  const fmt = n => Number(n).toLocaleString('en-US');
   const links = {0:'BSD loopback',1:'Ethernet',101:'Raw IP',108:'OpenBSD loopback',113:'Linux cooked v1',228:'IPv4',229:'IPv6',276:'Linux cooked v2'};
   const protocols = {1:'ICMP',6:'TCP',17:'UDP',41:'IPv6',47:'GRE',50:'ESP',51:'AH',58:'ICMPv6',59:'No next header'};
   const dnsTypes = {1:'A',2:'NS',5:'CNAME',6:'SOA',12:'PTR',15:'MX',16:'TXT',28:'AAAA',33:'SRV',65:'HTTPS'};
@@ -177,109 +183,224 @@ const PcapAnalysis = (() => {
     }catch(error){p.malformed=true;p.notes.push(error.message);}
     return p;
   }
-  function analyse(input, sourceFile='capture.pcap', progress=()=>{}) {
-    const a=input instanceof Uint8Array?input:new Uint8Array(input);
-    if(a.byteLength>MAX_BYTES)throw new Error('Capture exceeds 100 MiB. Split it into smaller files.');
-    if(a.length<4)throw new Error('This file is too short to contain a PCAP header.');
-    const v=new DataView(a.buffer,a.byteOffset,a.byteLength), packets=[], interfaces=[], warnings=[], ignored={};
-    let format,sections=0,little=true,at=0,skipped=0;
-    const warning=(message)=>{if(warnings.length<50)warnings.push(message);};
-    function add(offset,cap,wire,timestamp,iface,recordOffset) {
-      if(packets.length>=MAX_PACKETS)throw new Error('Capture exceeds 200,000 packets. Split it into smaller files.');
-      if(offset+cap>a.length)throw new Error('Packet extends beyond the capture at byte '+recordOffset+'.');
-      const p=decodePacket(a.subarray(offset,offset+cap),{number:packets.length+1,offset,record_offset:recordOffset,captured_bytes:cap,original_bytes:wire,timestamp,interface_id:iface.id,linktype:iface.linktype,little_endian:little});
+
+  // Incremental parser. feed() decodes every complete record in a buffer and
+  // returns how many bytes it consumed, so the same code serves an in-memory
+  // Uint8Array (one call) and a File read in chunks (many calls).
+  function createParser(total, sourceFile, progress) {
+    const packets=[], interfaces=[], warnings=[], ignored={};
+    let format=null, sections=0, little=true, skipped=0, stopReason=null, halt=false, needBytes=0;
+    let scale=1e-3, pcapIface=null, local=[], buf=null, base=0, v=null;
+    const warning=message=>{if(warnings.length<50)warnings.push(message);};
+
+    // Truncation or corruption after at least one packet keeps the packets read
+    // so far. With no packets there is nothing to show, so it is an error.
+    function cutOff(byte, detail) {
+      if(!packets.length) throw new Error('Capture is cut off at byte '+fmt(byte)+' before any complete packet. '+detail);
+      stopReason='Capture is cut off at byte '+fmt(byte)+'. '+detail+' '+fmt(packets.length)+' complete packets were analysed; the remainder was ignored.';
+      halt=true;
+    }
+    function stop(message, byte) {
+      if(!packets.length) throw new Error(message+' (byte '+fmt(byte)+')');
+      stopReason='Analysis stopped at byte '+fmt(byte)+'. '+message+' The file may be corrupt or in a variant format. '+fmt(packets.length)+' packets before this point were analysed.';
+      halt=true;
+    }
+    function add(at,cap,wire,timestamp,iface,recordAt) {
+      if(packets.length>=MAX_PACKETS){
+        stopReason='Packet limit reached: the first '+fmt(MAX_PACKETS)+' packets were analysed. The rest of the file, from byte '+fmt(base+recordAt)+', was not read.';
+        halt=true;return;
+      }
+      const p=decodePacket(buf.subarray(at,at+cap),{number:packets.length+1,offset:base+at,record_offset:base+recordAt,captured_bytes:cap,original_bytes:wire,timestamp,interface_id:iface.id,linktype:iface.linktype,little_endian:little});
       if(cap>wire)p.notes.push('Captured length exceeds the original packet length.');
       if(iface.snaplen && cap>iface.snaplen)p.notes.push('Captured length exceeds the interface snapshot length.');
       if(cap<wire)p.capture_truncated=true;
       if(timestamp!==null && (!Number.isFinite(timestamp)||Math.abs(timestamp)>8640000000000000)){p.timestamp=null;p.notes.push('Timestamp outside supported date range.');}
-      packets.push(p);if(packets.length%2000===0)progress(Math.min(99,Math.floor(offset/a.length*100)),packets.length);
+      packets.push(p);if(packets.length%2000===0)progress(Math.min(99,Math.floor((base+at)/total*100)),packets.length);
     }
-    if(v.getUint32(0,false)===0x0a0d0d0a){
-      format='PCAPNG';let local=[];
-      while(at<a.length){
-        if(at+12>a.length)throw new Error('Incomplete PCAPNG block at byte '+at+'.');
-        if(v.getUint32(at,false)===0x0a0d0d0a){
-          if(at+28>a.length)throw new Error('Incomplete PCAPNG section header.');
-          const magic=v.getUint32(at+8,true);if(![0x1a2b3c4d,0x4d3c2b1a].includes(magic))throw new Error('Invalid PCAPNG byte-order magic.');little=magic===0x1a2b3c4d;
+
+    // Handles one complete PCAPNG block. Returns false to stop parsing.
+    function block(at,len,type,abs) {
+      if(type===0x0a0d0d0a){
+        if(len<28||v.getUint16(at+12,little)!==1){stop('Unsupported PCAPNG section version.',abs);return false;}
+        sections++;local=[];return true;
+      }
+      if(!sections) throw new Error('PCAPNG must start with a section header.');
+      if(type===1){
+        if(len<20){stop('Incomplete PCAPNG interface block.',abs);return false;}
+        const iface={id:interfaces.length,section:sections,local_id:local.length,linktype:v.getUint16(at+8,little),snaplen:v.getUint32(at+12,little),resolution:1e-6,time_offset:0,name:'Interface '+local.length};
+        for(let p=at+16;p+4<=at+len-4;){
+          const code=v.getUint16(p,little),size=v.getUint16(p+2,little);p+=4;
+          if(p+size>at+len-4){stop('Invalid PCAPNG interface option.',abs);return false;}
+          if(!code)break;
+          if(code===2)iface.name=new TextDecoder().decode(buf.subarray(p,p+Math.min(size,256)));
+          if(code===9&&size===1)iface.resolution=(buf[p]&128)?Math.pow(2,-(buf[p]&127)):Math.pow(10,-buf[p]);
+          if(code===14&&size===8)iface.time_offset=Number(v.getBigInt64(p,little));
+          p+=Math.ceil(size/4)*4;
         }
-        const type=v.getUint32(at,little),len=v.getUint32(at+4,little);
-        if(len<12||len%4||at+len>a.length||v.getUint32(at+len-4,little)!==len)throw new Error('Invalid PCAPNG block length at byte '+at+'.');
-        if(type===0x0a0d0d0a){if(len<28||v.getUint16(at+12,little)!==1)throw new Error('Unsupported PCAPNG section version.');sections++;local=[];}
-        else if(!sections)throw new Error('PCAPNG must start with a section header.');
-        else if(type===1){
-          if(len<20)throw new Error('Incomplete PCAPNG interface.');
-          const iface={id:interfaces.length,section:sections,local_id:local.length,linktype:v.getUint16(at+8,little),snaplen:v.getUint32(at+12,little),resolution:1e-6,time_offset:0,name:'Interface '+local.length};
-          for(let p=at+16;p+4<=at+len-4;){const code=v.getUint16(p,little),size=v.getUint16(p+2,little);p+=4;if(p+size>at+len-4)throw new Error('Invalid PCAPNG interface option.');if(!code)break;
-            if(code===2)iface.name=new TextDecoder().decode(a.subarray(p,p+Math.min(size,256)));
-            if(code===9&&size===1)iface.resolution=(a[p]&128)?Math.pow(2,-(a[p]&127)):Math.pow(10,-a[p]);
-            if(code===14&&size===8)iface.time_offset=Number(v.getBigInt64(p,little));p+=Math.ceil(size/4)*4;}
-          local.push(iface);interfaces.push(iface);
-        }else if(type===6||type===2){
-          if(len<32)throw new Error('Incomplete PCAPNG packet block.');const iface=local[type===6?v.getUint32(at+8,little):v.getUint16(at+8,little)];
-          if(!iface)throw new Error('PCAPNG packet references an unknown interface.');
-          const cap=v.getUint32(at+20,little),wire=v.getUint32(at+24,little);if(28+Math.ceil(cap/4)*4>len-4)throw new Error('PCAPNG packet data exceeds its block.');
-          const ticks=v.getUint32(at+12,little)*4294967296+v.getUint32(at+16,little);add(at+28,cap,wire,(ticks*iface.resolution+iface.time_offset)*1000,iface,at);
-        }else if(type===3){
-          if(len<16||!local[0])throw new Error('Invalid PCAPNG simple packet block.');const wire=v.getUint32(at+8,little),cap=Math.min(wire,local[0].snaplen||wire);
-          if(12+Math.ceil(cap/4)*4>len-4)throw new Error('Incomplete PCAPNG simple packet data.');add(at+12,cap,wire,null,local[0],at);
-        }else {ignored[type]=(ignored[type]||0)+1;skipped++;}
-        at+=len;
+        local.push(iface);interfaces.push(iface);return true;
       }
-    }else{
-      format='PCAP';const magic=v.getUint32(0,false),known={2712847316:[false,1e-3],3569595041:[true,1e-3],2712812621:[false,1e-6],1295823521:[true,1e-6]};
-      if(!known[magic])throw new Error('Unrecognised capture format. Choose an uncompressed PCAP or PCAPNG file.');
-      if(a.length<24)throw new Error('Incomplete PCAP global header.');
-      let scale;[little,scale]=known[magic];if(v.getUint16(4,little)!==2||v.getUint16(6,little)!==4)throw new Error('Unsupported PCAP version (expected 2.4).');
-      const iface={id:0,section:1,local_id:0,name:'Capture interface',linktype:v.getUint32(20,little)&0xffff,snaplen:v.getUint32(16,little),resolution:scale/1000,time_offset:0};interfaces.push(iface);sections=1;at=24;
-      while(at<a.length){if(at+16>a.length)throw new Error('Incomplete PCAP record header at byte '+at+'.');const sec=v.getUint32(at,little),fraction=v.getUint32(at+4,little),cap=v.getUint32(at+8,little),wire=v.getUint32(at+12,little);
-        const invalidTime=fraction>=(scale===1e-3?1e6:1e9);if(invalidTime)warning('Out-of-range timestamp fraction at packet '+(packets.length+1)+'.');
-        add(at+16,cap,wire,invalidTime?null:sec*1000+fraction*scale,iface,at);if(invalidTime)packets[packets.length-1].notes.push('Invalid timestamp fractional field.');at+=16+cap;}
-    }
-    interfaces.forEach(i=>{i.link_name=links[i.linktype]||'Unsupported link type '+i.linktype;});
-    const connections=new Map(),hosts=new Map(),addresses=new Map(),transport=new Map(),applications=new Map();
-    const counts={packets:packets.length,captured_bytes:0,original_bytes:0,tcp_payload_bytes:0,truncated_packets:0,malformed_packets:0,unsupported_packets:0,fragmented_packets:0,packets_with_notes:0,tcp_resets:0,tcp_syn:0,dns_messages:0,dns_error_responses:0,adb_headers:0,missing_timestamps:0};
-    let start=null,end=null;
-    function bump(map,key,n=1){map.set(key,(map.get(key)||0)+n);}
-    function host(name,source,p,value=null){
-      const key=name.toLowerCase();let h=hosts.get(key);if(!h){if(hosts.size>=20000)return;h={name,sources:[],packets:0,first_packet:p.number,answers:[]};hosts.set(key,h);}
-      if(!h.sources.includes(source))h.sources.push(source);if(h.last_packet!==p.number){h.packets++;h.last_packet=p.number;}if(value&&!h.answers.includes(value)&&h.answers.length<32)h.answers.push(value);
-      if(!p.names)p.names=[];if(!p.names.includes(name))p.names.push(name);
-    }
-    for(const p of packets){
-      counts.captured_bytes+=p.captured_bytes;counts.original_bytes+=p.original_bytes;if(p.transport==='TCP')counts.tcp_payload_bytes+=p.payload_bytes;
-      if(p.capture_truncated||p.notes.some(n=>n.includes('truncated in capture')))counts.truncated_packets++;
-      if(p.malformed)counts.malformed_packets++;if(p.unsupported)counts.unsupported_packets++;if(p.fragmented)counts.fragmented_packets++;if(p.notes.length)counts.packets_with_notes++;
-      if(p.tcp_flags&4)counts.tcp_resets++;if(p.tcp_flags&2)counts.tcp_syn++;
-      if(p.timestamp===null)counts.missing_timestamps++;else {start=start===null?p.timestamp:Math.min(start,p.timestamp);end=end===null?p.timestamp:Math.max(end,p.timestamp);}
-      bump(transport,p.transport);if(p.application)bump(applications,p.application);
-      for(const ip of new Set([p.src,p.dst]))if(ip){let entry=addresses.get(ip);if(!entry){entry={address:ip,scope:addressScope(ip),packets:0};addresses.set(ip,entry);}entry.packets++;}
-      if(p.dns){counts.dns_messages++;if(p.dns.response&&p.dns.rcode)counts.dns_error_responses++;for(const q of p.dns.questions)host(q.name,p.application+' question',p);for(const r of p.dns.records)host(r.name,p.application+' '+r.type,p,r.value);}
-      if(p.tls_sni)host(p.tls_sni,'TLS SNI',p);if(p.http_host)host(p.http_host,'HTTP Host',p);if(p.adb)counts.adb_headers++;
-      if(p.src&&p.dst){
-        const ends=[endpoint(p.src,p.src_port),endpoint(p.dst,p.dst_port)].sort();const key=p.interface_id+'|'+p.transport+'|'+ends.join('|');
-        let c=connections.get(key);if(!c){c={id:connections.size,interface_id:p.interface_id,transport:p.transport,a:ends[0],b:ends[1],packets:0,bytes:0,a_to_b:0,b_to_a:0,first_packet:p.number,first_time:null,last_time:null,names:[],applications:[],tcp_resets:0};connections.set(key,c);}
-        p.connection=c.id;c.packets++;c.bytes+=p.captured_bytes;c[endpoint(p.src,p.src_port)===c.a?'a_to_b':'b_to_a']++;if(p.tcp_flags&4)c.tcp_resets++;
-        if(p.timestamp!==null){c.first_time=c.first_time===null?p.timestamp:Math.min(c.first_time,p.timestamp);c.last_time=c.last_time===null?p.timestamp:Math.max(c.last_time,p.timestamp);}
-        if(p.application&&!c.applications.includes(p.application))c.applications.push(p.application);
-        for(const name of p.names||[])if(!c.names.includes(name)&&c.names.length<32)c.names.push(name);
+      if(type===6||type===2){
+        if(len<32){stop('Incomplete PCAPNG packet block.',abs);return false;}
+        const iface=local[type===6?v.getUint32(at+8,little):v.getUint16(at+8,little)];
+        if(!iface){stop('PCAPNG packet references an unknown interface.',abs);return false;}
+        const cap=v.getUint32(at+20,little),wire=v.getUint32(at+24,little);
+        if(28+Math.ceil(cap/4)*4>len-4){stop('PCAPNG packet data exceeds its block.',abs);return false;}
+        const ticks=v.getUint32(at+12,little)*4294967296+v.getUint32(at+16,little);
+        add(at+28,cap,wire,(ticks*iface.resolution+iface.time_offset)*1000,iface,at);return !halt;
       }
+      if(type===3){
+        if(len<16||!local[0]){stop('Invalid PCAPNG simple packet block.',abs);return false;}
+        const wire=v.getUint32(at+8,little),cap=Math.min(wire,local[0].snaplen||wire);
+        if(12+Math.ceil(cap/4)*4>len-4){stop('Incomplete PCAPNG simple packet data.',abs);return false;}
+        add(at+12,cap,wire,null,local[0],at);return !halt;
+      }
+      ignored[type]=(ignored[type]||0)+1;skipped++;return true;
     }
-    const notes=[
-      'Conversation groups combine both directions for the same endpoints, transport and interface. Reused endpoint pairs can contain multiple sessions.',
-      'Bytes are captured packet bytes, including protocol headers and retransmissions. They are not unique downloaded or uploaded content.',
-      'DNS, HTTP Host and TLS SNI names are observed only in complete messages within individual packets. TCP streams and IP fragments are not reassembled; encrypted DNS, QUIC names and encrypted payloads are not decoded.',
-      'A packet capture alone does not identify the Android app or UID that created each connection. Hostnames and IP addresses do not establish an app, owner, country or malicious behaviour.',
-      'Checksums, retransmission analysis and packet-loss estimates are not evaluated. Raw packet bytes are available only while this capture is open.'
-    ];
-    if(!hosts.size)notes.unshift('No DNS, HTTP Host or TLS SNI names were decoded in this capture. This does not establish that no websites were used.');
-    if(counts.adb_headers)notes.unshift('ADB message headers were detected by command and magic fields. This describes Android debugging protocol traffic; it does not establish who initiated it.');
-    if(counts.unsupported_packets)warning(counts.unsupported_packets+' packets use link/network formats that were not decoded.');
-    if(counts.missing_timestamps)warning(counts.missing_timestamps+' packets have no usable timestamp.');
-    if(hosts.size>=20000)warning('Host list reached its 20,000-name limit.');
-    const sorted=map=>Array.from(map,([name,packets])=>({name,packets})).sort((a,b)=>b.packets-a.packets);
-    const summary={tool:'pcap',version:1,source_file:sourceFile,file_bytes:a.length,analyzed_at:new Date().toISOString(),format,sections,interfaces,counts,start_time:start,end_time:end,duration_seconds:start===null?null:(end-start)/1000,transports:sorted(transport),applications:sorted(applications),addresses:Array.from(addresses.values()).sort((a,b)=>b.packets-a.packets),connection_count:connections.size,host_count:hosts.size,ignored_blocks:ignored,skipped_blocks:skipped,warnings,notes};
-    return {summary,packets,connections:Array.from(connections.values()).sort((a,b)=>b.bytes-a.bytes),hosts:Array.from(hosts.values()).sort((a,b)=>b.packets-a.packets),bytes:a};
+
+    function feed(b, offset, final) {
+      buf=b;base=offset;v=new DataView(b.buffer,b.byteOffset,b.byteLength);needBytes=0;
+      let at=0;
+      if(format===null){
+        if(b.length<4){if(final)throw new Error('This file is too short to contain a PCAP header.');needBytes=4;return 0;}
+        const magic=v.getUint32(0,false);
+        if(magic===0x0a0d0d0a)format='PCAPNG';
+        else{
+          const known=PCAP_MAGIC[magic];
+          if(!known)throw new Error('Unrecognised capture format. Choose an uncompressed PCAP or PCAPNG file.');
+          if(b.length<24){if(final)throw new Error('Incomplete PCAP global header.');needBytes=24;return 0;}
+          little=known[0];scale=known[1];
+          if(v.getUint16(4,little)!==2||v.getUint16(6,little)!==4)throw new Error('Unsupported PCAP version (expected 2.4).');
+          pcapIface={id:0,section:1,local_id:0,name:'Capture interface',linktype:v.getUint32(20,little)&0xffff,snaplen:v.getUint32(16,little),resolution:scale/1000,time_offset:0};
+          interfaces.push(pcapIface);sections=1;format='PCAP';at=24;
+        }
+      }
+      if(format==='PCAP'){
+        while(at<b.length&&!halt){
+          const abs=base+at;
+          if(at+16>b.length){
+            if(final)cutOff(abs,'Only '+(b.length-at)+' bytes remain, fewer than a 16-byte record header.');else needBytes=16;
+            break;
+          }
+          const sec=v.getUint32(at,little),fraction=v.getUint32(at+4,little),cap=v.getUint32(at+8,little),wire=v.getUint32(at+12,little);
+          if(cap>MAX_RECORD_BYTES){stop('The packet header declares '+fmt(cap)+' captured bytes ('+fmt(wire)+' original), which is implausible.',abs);break;}
+          if(at+16+cap>b.length){
+            if(final)cutOff(abs,'The next packet needs '+fmt(at+16+cap-b.length)+' more bytes than the file contains.');else needBytes=16+cap;
+            break;
+          }
+          const invalidTime=fraction>=(scale===1e-3?1e6:1e9);
+          if(invalidTime)warning('Out-of-range timestamp fraction at packet '+(packets.length+1)+'.');
+          add(at+16,cap,wire,invalidTime?null:sec*1000+fraction*scale,pcapIface,at);
+          if(halt)break;
+          if(invalidTime)packets[packets.length-1].notes.push('Invalid timestamp fractional field.');
+          at+=16+cap;
+        }
+      }else{
+        while(at<b.length&&!halt){
+          const abs=base+at;
+          if(at+12>b.length){
+            if(final)cutOff(abs,'Only '+(b.length-at)+' bytes remain, fewer than a 12-byte block header.');else needBytes=12;
+            break;
+          }
+          if(v.getUint32(at,false)===0x0a0d0d0a){
+            const magic=v.getUint32(at+8,true);
+            if(magic!==0x1a2b3c4d&&magic!==0x4d3c2b1a){stop('Invalid PCAPNG byte-order magic.',abs);break;}
+            little=magic===0x1a2b3c4d;
+          }
+          const type=v.getUint32(at,little),len=v.getUint32(at+4,little);
+          if(len<12||len%4||len>MAX_BLOCK_BYTES){stop('Invalid PCAPNG block length.',abs);break;}
+          if(at+len>b.length){
+            if(final)cutOff(abs,'The next block needs '+fmt(at+len-b.length)+' more bytes than the file contains.');else needBytes=len;
+            break;
+          }
+          if(v.getUint32(at+len-4,little)!==len){stop('PCAPNG block trailer does not match its length.',abs);break;}
+          if(!block(at,len,type,abs))break;
+          at+=len;
+        }
+      }
+      return at;
+    }
+
+    function finish(bytes, file) {
+      if(format===null)throw new Error('This file is too short to contain a PCAP header.');
+      interfaces.forEach(i=>{i.link_name=links[i.linktype]||'Unsupported link type '+i.linktype;});
+      const connections=new Map(),hosts=new Map(),addresses=new Map(),transport=new Map(),applications=new Map();
+      const counts={packets:packets.length,captured_bytes:0,original_bytes:0,tcp_payload_bytes:0,truncated_packets:0,malformed_packets:0,unsupported_packets:0,fragmented_packets:0,packets_with_notes:0,tcp_resets:0,tcp_syn:0,dns_messages:0,dns_error_responses:0,adb_headers:0,missing_timestamps:0};
+      let start=null,end=null;
+      function bump(map,key,n=1){map.set(key,(map.get(key)||0)+n);}
+      function host(name,source,p,value=null){
+        const key=name.toLowerCase();let h=hosts.get(key);if(!h){if(hosts.size>=20000)return;h={name,sources:[],packets:0,first_packet:p.number,answers:[]};hosts.set(key,h);}
+        if(!h.sources.includes(source))h.sources.push(source);if(h.last_packet!==p.number){h.packets++;h.last_packet=p.number;}if(value&&!h.answers.includes(value)&&h.answers.length<32)h.answers.push(value);
+        if(!p.names)p.names=[];if(!p.names.includes(name))p.names.push(name);
+      }
+      for(const p of packets){
+        counts.captured_bytes+=p.captured_bytes;counts.original_bytes+=p.original_bytes;if(p.transport==='TCP')counts.tcp_payload_bytes+=p.payload_bytes;
+        if(p.capture_truncated||p.notes.some(n=>n.includes('truncated in capture')))counts.truncated_packets++;
+        if(p.malformed)counts.malformed_packets++;if(p.unsupported)counts.unsupported_packets++;if(p.fragmented)counts.fragmented_packets++;if(p.notes.length)counts.packets_with_notes++;
+        if(p.tcp_flags&4)counts.tcp_resets++;if(p.tcp_flags&2)counts.tcp_syn++;
+        if(p.timestamp===null)counts.missing_timestamps++;else {start=start===null?p.timestamp:Math.min(start,p.timestamp);end=end===null?p.timestamp:Math.max(end,p.timestamp);}
+        bump(transport,p.transport);if(p.application)bump(applications,p.application);
+        for(const ip of new Set([p.src,p.dst]))if(ip){let entry=addresses.get(ip);if(!entry){entry={address:ip,scope:addressScope(ip),packets:0};addresses.set(ip,entry);}entry.packets++;}
+        if(p.dns){counts.dns_messages++;if(p.dns.response&&p.dns.rcode)counts.dns_error_responses++;for(const q of p.dns.questions)host(q.name,p.application+' question',p);for(const r of p.dns.records)host(r.name,p.application+' '+r.type,p,r.value);}
+        if(p.tls_sni)host(p.tls_sni,'TLS SNI',p);if(p.http_host)host(p.http_host,'HTTP Host',p);if(p.adb)counts.adb_headers++;
+        if(p.src&&p.dst){
+          const ends=[endpoint(p.src,p.src_port),endpoint(p.dst,p.dst_port)].sort();const key=p.interface_id+'|'+p.transport+'|'+ends.join('|');
+          let c=connections.get(key);if(!c){c={id:connections.size,interface_id:p.interface_id,transport:p.transport,a:ends[0],b:ends[1],packets:0,bytes:0,a_to_b:0,b_to_a:0,first_packet:p.number,first_time:null,last_time:null,names:[],applications:[],tcp_resets:0};connections.set(key,c);}
+          p.connection=c.id;c.packets++;c.bytes+=p.captured_bytes;c[endpoint(p.src,p.src_port)===c.a?'a_to_b':'b_to_a']++;if(p.tcp_flags&4)c.tcp_resets++;
+          if(p.timestamp!==null){c.first_time=c.first_time===null?p.timestamp:Math.min(c.first_time,p.timestamp);c.last_time=c.last_time===null?p.timestamp:Math.max(c.last_time,p.timestamp);}
+          if(p.application&&!c.applications.includes(p.application))c.applications.push(p.application);
+          for(const name of p.names||[])if(!c.names.includes(name)&&c.names.length<32)c.names.push(name);
+        }
+      }
+      const notes=[
+        'Conversation groups combine both directions for the same endpoints, transport and interface. Reused endpoint pairs can contain multiple sessions.',
+        'Bytes are captured packet bytes, including protocol headers and retransmissions. They are not unique downloaded or uploaded content.',
+        'DNS, HTTP Host and TLS SNI names are observed only in complete messages within individual packets. TCP streams and IP fragments are not reassembled; encrypted DNS, QUIC names and encrypted payloads are not decoded.',
+        'A packet capture alone does not identify the Android app or UID that created each connection. Hostnames and IP addresses do not establish an app, owner, country or malicious behaviour.',
+        'Checksums, retransmission analysis and packet-loss estimates are not evaluated. Raw packet bytes are available only while this capture is open.'
+      ];
+      if(!hosts.size)notes.unshift('No DNS, HTTP Host or TLS SNI names were decoded in this capture. This does not establish that no websites were used.');
+      if(counts.adb_headers)notes.unshift('ADB message headers were detected by command and magic fields. This describes Android debugging protocol traffic; it does not establish who initiated it.');
+      if(counts.unsupported_packets)warning(counts.unsupported_packets+' packets use link/network formats that were not decoded.');
+      if(counts.missing_timestamps)warning(counts.missing_timestamps+' packets have no usable timestamp.');
+      if(hosts.size>=20000)warning('Host list reached its 20,000-name limit.');
+      if(stopReason)warnings.unshift(stopReason);
+      const sorted=map=>Array.from(map,([name,packets])=>({name,packets})).sort((a,b)=>b.packets-a.packets);
+      const summary={tool:'pcap',version:1,source_file:sourceFile,file_bytes:total,analyzed_at:new Date().toISOString(),format,sections,interfaces,counts,start_time:start,end_time:end,duration_seconds:start===null?null:(end-start)/1000,transports:sorted(transport),applications:sorted(applications),addresses:Array.from(addresses.values()).sort((a,b)=>b.packets-a.packets),connection_count:connections.size,host_count:hosts.size,ignored_blocks:ignored,skipped_blocks:skipped,warnings,notes,incomplete:Boolean(stopReason),incomplete_reason:stopReason};
+      return {summary,packets,connections:Array.from(connections.values()).sort((a,b)=>b.bytes-a.bytes),hosts:Array.from(hosts.values()).sort((a,b)=>b.packets-a.packets),bytes:bytes||null,file:file||null};
+    }
+    return {feed,finish,need:()=>needBytes,halted:()=>halt,count:()=>packets.length};
   }
+
+  // In-memory analysis for small inputs (kept for compatibility).
+  function analyse(input, sourceFile='capture.pcap', progress=()=>{}) {
+    const a=input instanceof Uint8Array?input:new Uint8Array(input);
+    if(a.byteLength>MAX_BYTES)throw new Error('Capture exceeds 5 GiB. Split it into smaller files.');
+    if(a.length<4)throw new Error('This file is too short to contain a PCAP header.');
+    const parser=createParser(a.byteLength,sourceFile,progress);
+    parser.feed(a,0,true);
+    return parser.finish(a,null);
+  }
+
+  // Streaming analysis for a File/Blob of any size up to MAX_BYTES.
+  async function analyseFile(file, sourceFile=file.name||'capture.pcap', progress=()=>{}) {
+    if(file.size>MAX_BYTES)throw new Error('Capture exceeds 5 GiB. Split it into smaller files.');
+    if(file.size<4)throw new Error('This file is too short to contain a PCAP header.');
+    const parser=createParser(file.size,sourceFile,progress);
+    let pos=0;
+    while(pos<file.size&&!parser.halted()){
+      const want=Math.min(file.size-pos,Math.max(CHUNK_BYTES,parser.need()));
+      const chunk=new Uint8Array(await file.slice(pos,pos+want).arrayBuffer());
+      if(chunk.length!==want)throw new Error('The browser could not read the whole file. Copy it to local storage and try again.');
+      const final=pos+chunk.length>=file.size;
+      const used=parser.feed(chunk,pos,final);
+      if(!used&&!final&&!parser.halted()&&parser.need()<=chunk.length)throw new Error('Internal parser stall at byte '+fmt(pos)+'.');
+      pos+=used;
+      progress(Math.min(99,Math.floor(pos/file.size*100)),parser.count());
+      if(final)break;
+    }
+    return parser.finish(null,file);
+  }
+
   function matches(row,kind,filters={}){
     if(filters.protocol && !(kind==='packets'?[row.transport,row.application]:[row.transport,...(row.applications||[])]).includes(filters.protocol))return false;
     if(filters.connection!==undefined && filters.connection!==null && kind==='packets' && row.connection!==Number(filters.connection))return false;
@@ -294,8 +415,20 @@ const PcapAnalysis = (() => {
     const rows=data[kind].filter(row=>matches(row,kind,filters));pageSize=Math.min(100,Math.max(1,Number(pageSize)||100));page=Math.min(Math.max(0,Math.floor(Number(page)||0)),Math.max(0,Math.ceil(rows.length/pageSize)-1));
     return {kind,total:rows.length,page,page_size:pageSize,rows:rows.slice(page*pageSize,(page+1)*pageSize)};
   }
-  function inspect(data,number){const p=data.packets[Number(number)-1];if(!p)throw new Error('Packet not found.');return {packet:p,hex:Array.from(data.bytes.subarray(p.offset,p.offset+Math.min(p.captured_bytes,1024))),hex_limit:1024};}
+  function inspect(data,number){
+    const p=data.packets[Number(number)-1];if(!p)throw new Error('Packet not found.');
+    if(!data.bytes)throw new Error('Packet bytes are read from the file; use inspectAsync.');
+    return {packet:p,hex:Array.from(data.bytes.subarray(p.offset,p.offset+Math.min(p.captured_bytes,1024))),hex_limit:1024};
+  }
+  // Works for both modes: reads the packet's bytes from the File when streamed.
+  async function inspectAsync(data,number){
+    if(data.bytes)return inspect(data,number);
+    const p=data.packets[Number(number)-1];if(!p)throw new Error('Packet not found.');
+    const n=Math.min(p.captured_bytes,1024);
+    const bytes=new Uint8Array(await data.file.slice(p.offset,p.offset+n).arrayBuffer());
+    return {packet:p,hex:Array.from(bytes),hex_limit:1024};
+  }
   function report(data){return {...data.summary,connections:data.connections,hosts:data.hosts};}
-  return Object.freeze({analyse,query,inspect,matches,report,addressScope,endpoint,MAX_BYTES,MAX_PACKETS});
+  return Object.freeze({analyse,analyseFile,query,inspect,inspectAsync,matches,report,addressScope,endpoint,MAX_BYTES,MAX_PACKETS});
 })();
 if(typeof module!=='undefined' && module.exports)module.exports=PcapAnalysis;
