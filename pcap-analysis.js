@@ -1,7 +1,7 @@
 // Local, bounded PCAP/PCAPNG decoding. No network lookups or decryption.
 const PcapAnalysis = (() => {
   'use strict';
-  const MAX_BYTES = 5 * 1024 * 1024 * 1024, MAX_PACKETS = 200000;
+  const MAX_BYTES = 5 * 1024 * 1024 * 1024, MAX_PACKETS = 2000000;
   const links = {0:'BSD loopback',1:'Ethernet',101:'Raw IP',108:'OpenBSD loopback',113:'Linux cooked v1',228:'IPv4',229:'IPv6',276:'Linux cooked v2'};
   const protocols = {1:'ICMP',6:'TCP',17:'UDP',41:'IPv6',47:'GRE',50:'ESP',51:'AH',58:'ICMPv6',59:'No next header'};
   const dnsTypes = {1:'A',2:'NS',5:'CNAME',6:'SOA',12:'PTR',15:'MX',16:'TXT',28:'AAAA',33:'SRV',65:'HTTPS'};
