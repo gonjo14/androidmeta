@@ -362,7 +362,6 @@ const PackageNames = (() => {
       ["com.tblenovo.lenovowhatsnew", "Lenovo What's New"],
       ["com.android.emergency", "Android Emergency Info"],
       ["com.zui.keyboardupdate.olympia", "ZUI Keyboard Update (Lenovo)"],
-      ["org.thoughtcrime.securesms", "Signal Private Messenger"],
       ["in.startv.hotstar", "Disney+ Hotstar"],
       ["com.nextbillion.groww", "Groww: Mutual Funds, Stocks & IPO"],
       ["com.x8bit.bitwarden", "Bitwarden Password Manager"],
