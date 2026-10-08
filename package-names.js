@@ -370,6 +370,7 @@ const PackageNames = (() => {
       ["com.csam.icici.bank.imobile", "ICICI Bank iMobile"],
       ["jp.co.goodroid.hyper.puzzle.arrows3dcubepuzzle", "Arrows 3D Cube Puzzle"],
       ["com.samsung.android.app.notes.addons", "Samsung Notes"],
+      ["com.connect.enduser", "Hik-Connect - for end users"],
       ["diamond.pixel.art.jewel.color.flow.sort.puzzle", "Diamond Pixel Art Jewel Color Flow Sort Puzzle"],
       ["com.google.android.overlay.gmsconfig.searchselector", "GMS Config Search Selector Overlay"]
   ];
