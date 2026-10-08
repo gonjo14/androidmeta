@@ -69,7 +69,7 @@ function validateCapture(file, tool = 'logcat') {
 // Exact-ID evidence and namespace hints are separate; hints never assign country.
 const PackageOrigins = (() => {
   'use strict';
-  const VERSION = '2026-09-22.2';
+  const VERSION = '2026-10-08.1';
   const CHECKED_AT = '2026-09-22';
   const SCOPE = 'China-linked means a listed publisher based in mainland China, or a documented parent group with substantial operations there. Publisher location and group links are shown separately.';
   const LIMITATION = 'Exact-ID catalogue matches record publisher evidence. Namespace hints suggest a publisher or platform but leave country unverified. Neither authenticates the installed APK or assesses app safety. Unclassified does not mean non-Chinese; a publisher listed elsewhere does not exclude other China connections.';
@@ -132,7 +132,29 @@ const PackageOrigins = (() => {
 
   // The source demonstrates the namespace on an official app; it does NOT
   // verify every ID sharing it. These rules create hints, never country labels.
+  // Manufacturer names are heuristic candidates. These links establish brand
+  // context only; they do not verify the namespace or an installed APK signer.
+  const manufacturerHint = (prefix, name, url) => ({
+    prefix, name, manufacturer_hint: true,
+    source: { title: 'Official manufacturer site (brand context only)', url },
+  });
   const namespaceHints = [
+    manufacturerHint('com.xiaomi.', 'Xiaomi', 'https://www.mi.com/global/'),
+    manufacturerHint('com.miui.', 'Xiaomi / MIUI', 'https://www.mi.com/global/'),
+    manufacturerHint('com.vivo.', 'Vivo', 'https://www.vivo.com/en/'),
+    manufacturerHint('com.iqoo.', 'iQOO', 'https://www.iqoo.com/in/'),
+    manufacturerHint('com.oppo.', 'OPPO', 'https://www.oppo.com/en/'),
+    manufacturerHint('com.coloros.', 'OPPO / ColorOS', 'https://www.oppo.com/en/'),
+    manufacturerHint('com.oneplus.', 'OnePlus', 'https://www.oneplus.com/global'),
+    manufacturerHint('net.oneplus.', 'OnePlus', 'https://www.oneplus.com/global'),
+    manufacturerHint('com.oplus.', 'OPlus / OPPO / OnePlus software family', 'https://www.oppo.com/en/'),
+    manufacturerHint('com.realme.', 'Realme', 'https://www.realme.com/global/'),
+    manufacturerHint('com.huawei.', 'Huawei', 'https://consumer.huawei.com/en/'),
+    manufacturerHint('com.hihonor.', 'Honor', 'https://www.honor.com/global/'),
+    manufacturerHint('com.lenovo.', 'Lenovo', 'https://www.lenovo.com/'),
+    manufacturerHint('com.zui.', 'Lenovo / ZUI', 'https://www.lenovo.com/'),
+    manufacturerHint('com.zte.', 'ZTE', 'https://www.zte.com.cn/global/'),
+    manufacturerHint('cn.nubia.', 'Nubia', 'https://www.nubia.com/'),
     { prefix: 'com.samsung.', name: 'Samsung', source: play('com.samsung.android.app.notes') },
     { prefix: 'com.sec.', name: 'Samsung', source: play('com.sec.android.app.sbrowser') },
     { prefix: 'com.google.', name: 'Google', source: play('com.google.android.gm') },
@@ -148,14 +170,17 @@ const PackageOrigins = (() => {
     const platform = pkg.system === true && pkg.third_party !== true && typeof name === 'string' && (name === 'android' || name.startsWith('com.android.') || name.startsWith('android.'));
     if (hint || platform) {
       const prefix = hint?.prefix || (name === 'android' ? 'android' : name.startsWith('com.android.') ? 'com.android.' : 'android.');
-      const source = hint ? { ...hint.source, title: 'Official example of this namespace (not this package)' } : platformSource;
+      const source = hint ? { ...hint.source, title: hint.manufacturer_hint ? hint.source.title : 'Official example of this namespace (not this package)' } : platformSource;
       return {
         status: 'publisher-hint', basis: hint ? 'publisher-namespace' : 'platform-namespace',
         app_name: null, publisher: null, publisher_country: null, group: null,
         publisher_hint: hint?.name || 'Android platform / device vendor',
+        manufacturer_namespace_hint: hint?.manufacturer_hint === true,
         matched_package: null, matched_namespace: prefix, match_method: 'namespace-hint',
         reason: hint
-          ? `The ${prefix} namespace suggests ${hint.name}. This is an inference from the name, not verified publisher ownership. It does not establish the package country or rule out a China connection.`
+          ? hint.manufacturer_hint
+            ? `The ${prefix} namespace suggests ${hint.name} manufacturer software. Review this as a possible China-brand connection, not verified ownership. The linked site provides brand context only; publisher country and the installed APK signer remain unverified.`
+            : `The ${prefix} namespace suggests ${hint.name}. This is an inference from the name, not verified publisher ownership. It does not establish the package country or rule out a China connection.`
           : 'The collector reports a system package using an Android platform namespace. Device manufacturers can modify and sign platform packages; their publisher and country remain unestablished.',
         checked_at: CHECKED_AT, catalogue_version: VERSION, sources: [{ ...source }],
       };
