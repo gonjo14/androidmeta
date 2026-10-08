@@ -706,7 +706,6 @@ const Logcat = (() => {
         tags.set(record.tag, (tags.get(record.tag) || 0) + 1);
         formats.add(record.format);
       } else if (previous && (previous.format === 'long' || /^\s*(?:at\s+|Caused by:|Suppressed:|\.\.\. \d+ more|[\w.$]+(?:Exception|Error)(?::|$))/.test(raw))) {
-        // Continuations remain attached to their entry; the source text is retained separately.
         if (previous.message.length < 64000) previous.message += (previous.message ? '\n' : '') + raw;
         previous.endLine = i + 1; continuationLines++;
       } else {
@@ -976,7 +975,6 @@ const Bugreport = (() => {
     { re: /kidsguard/i, label: "KidsGuard-family" },
     { re: /\bminspy\b/i, label: "Minspy-family" },
     { re: /letmespy/i, label: "LetMeSpy-family" },
-  // --- Additional Stalkerware Families ---
     { re: /mobiletracker/i, label: "MobileTracker" },
     { re: /pctattletale/i, label: "pcTattletale" },
     { re: /\bspyhide\b/i, label: "SpyHide" },

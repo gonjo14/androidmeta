@@ -362,7 +362,16 @@ const PackageNames = (() => {
       ["com.tblenovo.lenovowhatsnew", "Lenovo What's New"],
       ["com.android.emergency", "Android Emergency Info"],
       ["com.zui.keyboardupdate.olympia", "ZUI Keyboard Update (Lenovo)"],
+      ["org.thoughtcrime.securesms", "Signal Private Messenger"],
       ["in.startv.hotstar", "Disney+ Hotstar"],
+      ["com.nextbillion.groww", "Groww: Mutual Funds, Stocks & IPO"],
+      ["com.x8bit.bitwarden", "Bitwarden Password Manager"],
+      ["com.dreamgames.royalekingdom", "Royal Kingdom Games"],
+      ["com.iexceed.appzillon.ippbMB", "IPPB Mobile Banking"],
+      ["com.csam.icici.bank.imobile", "ICICI Bank iMobile"],
+      ["jp.co.goodroid.hyper.puzzle.arrows3dcubepuzzle", "Arrows 3D Cube Puzzle"],
+      ["com.samsung.android.app.notes.addons", "Samsung Notes"],
+      ["diamond.pixel.art.jewel.color.flow.sort.puzzle", "Diamond Pixel Art Jewel Color Flow Sort Puzzle"],
       ["com.google.android.overlay.gmsconfig.searchselector", "GMS Config Search Selector Overlay"]
   ];
   const names = new Map(rows.map(([id, name, url]) => [id, Object.freeze({
