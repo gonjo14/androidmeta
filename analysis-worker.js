@@ -69,9 +69,9 @@ function validateCapture(file, tool = 'logcat') {
 // Exact-ID evidence and namespace hints are separate; hints never assign country.
 const PackageOrigins = (() => {
   'use strict';
-  const VERSION = '2026-10-08.1';
+  const VERSION = '2026-10-08.2';
   const CHECKED_AT = '2026-09-22';
-  const SCOPE = 'China-linked means a listed publisher based in mainland China, or a documented parent group with substantial operations there. Publisher location and group links are shown separately.';
+  const SCOPE = 'China-linked in this report includes listed publishers in mainland China (CN) or Hong Kong (HK), and documented parent groups with substantial mainland-China operations. Hong Kong publisher location is shown separately and does not establish mainland ownership.';
   const LIMITATION = 'Exact-ID catalogue matches record publisher evidence. Namespace hints suggest a publisher or platform but leave country unverified. Neither authenticates the installed APK or assesses app safety. Unclassified does not mean non-Chinese; a publisher listed elsewhere does not exclude other China connections.';
   const play = id => ({ title: 'Google Play publisher listing', url: `https://play.google.com/store/apps/details?id=${id}&hl=en` });
   const oneplus = (id, appName) => [id, {
@@ -84,13 +84,20 @@ const PackageOrigins = (() => {
     status: 'needs-review', basis: 'unresolved', app_name: appName,
     publisher, publisher_country: 'SG', group: null, reason, sources: [play(id)],
   }];
-  const listedPublisher = (id, appName, publisher, country) => [id, {
-    status: 'publisher-recorded', basis: 'listed-publisher', app_name: appName,
+  const listedPublisher = (id, appName, publisher, country, checkedAt = CHECKED_AT) => [id, {
+    status: ['CN', 'HK'].includes(country) ? 'china-linked' : 'publisher-recorded',
+    basis: country === 'CN' ? 'china-publisher' : country === 'HK' ? 'hong-kong-publisher' : 'listed-publisher',
+    app_name: appName, checked_at: checkedAt,
     publisher, publisher_country: country, group: null,
-    reason: 'The current listing for this exact package ID identifies this publisher and country. Parent-company connections and the installed APK signer have not been established by this rule.',
+    reason: country === 'HK'
+      ? 'The exact package listing identifies a Hong Kong publisher. Included in the broader China/Hong Kong publisher category; mainland-China ownership and the installed APK signer remain unverified.'
+      : 'The current listing for this exact package ID identifies this publisher and country. Parent-company connections and the installed APK signer have not been established by this rule.',
     sources: [play(id)],
   }];
   const entries = [
+    listedPublisher('com.connect.enduser', 'Hik-Connect', '费宇超 — listed developer; Hik-Connect brand', 'CN', '2026-10-08'),
+    listedPublisher('diamond.pixel.art.jewel.color.flow.sort.puzzle', 'Jewel Color Sort: Gems Art', '武汉正时信息技术有限公司 / HappyTapLand', 'CN', '2026-10-08'),
+    listedPublisher('com.dopuz.klotski.riddle', 'Numpuz: Number Puzzle Games', 'Fun Cradle Co., Limited / HDuo Fun Games', 'HK', '2026-10-08'),
     listedPublisher('com.sec.android.app.sbrowser', 'Samsung Browser', 'Samsung Electronics Co., Ltd.', 'KR'),
     listedPublisher('com.samsung.android.app.notes', 'Samsung Notes', 'Samsung Electronics Co., Ltd.', 'KR'),
     listedPublisher('com.google.android.gm', 'Gmail', 'Google LLC', 'US'),
@@ -165,7 +172,7 @@ const PackageOrigins = (() => {
 
   function lookup(name, pkg = {}) {
     const entry = catalogue.get(name);
-    if (entry) return { ...entry, match_method: 'exact-package-id', publisher_hint: null, matched_namespace: null, matched_package: name, checked_at: CHECKED_AT, catalogue_version: VERSION, sources: entry.sources.map(source => ({ ...source })) };
+    if (entry) return { ...entry, match_method: 'exact-package-id', publisher_hint: null, matched_namespace: null, matched_package: name, checked_at: entry.checked_at || CHECKED_AT, catalogue_version: VERSION, sources: entry.sources.map(source => ({ ...source })) };
     const hint = typeof name === 'string' ? namespaceHints.find(rule => name.startsWith(rule.prefix) && name.length > rule.prefix.length) : null;
     const platform = pkg.system === true && pkg.third_party !== true && typeof name === 'string' && (name === 'android' || name.startsWith('com.android.') || name.startsWith('android.'));
     if (hint || platform) {
